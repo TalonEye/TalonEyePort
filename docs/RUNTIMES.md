@@ -36,6 +36,7 @@ Every switch is a `SCARLETT_*` environment variable. The full list is in the sou
 | `SCARLETT_OWN_UPSCALER=1` | ask for the title's own upscaler instead of FSR on the Series S profile. Set by `play-scarlett.ps1`; read by the source vendored here (`crates/scarlett-loader/src/hooks.rs`) |
 | `SCARLETT_NO_WATCHDOG=1` | disarm the title's stall watchdog so it can wait for slow first-run shader builds. Set by `play-scarlett.ps1` |
 | `SCARLETT_FAST_BOOT=1` | testing only: press through logos and menus, stop once in the world |
+| `SCARLETT_FAST_BOOT_ESC=0` | with fast boot: press only A (Enter), not START (Esc), which can open the pause menu once in the world so the world is never seen |
 | `SCARLETT_SAVE_SLOT=<name>` | pick a save slot |
 | `SCARLETT_AUTO_INPUT=1` | press A on a timer |
 | `SCARLETT_KBM=0` | turn off keyboard and mouse as a pad (on by default; keys and settings in `engine/docs/input.md`) |

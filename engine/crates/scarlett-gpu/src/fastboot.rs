@@ -10,6 +10,9 @@
 //! [`MAX_SECONDS`]; `SCARLETT_FAST_BOOT_MAX_FRAMES` sets a frame limit too).
 //! After the world is detected, with `SCARLETT_SKIP_CUTSCENES=1`, A is still
 //! pressed for [`SKIP_SECONDS`] so the intro cutscene's prompt skips it.
+//! `SCARLETT_FAST_BOOT_ESC=0` leaves out the START (Esc) presses: in the
+//! world they open the pause menu, whose frames bind few targets, so the
+//! world may never be seen.
 //! Only our synthetic keys depend on this; the title's clocks and our frame
 //! pacing are never touched.
 
@@ -72,6 +75,19 @@ pub fn skipping() -> bool {
 /// is always false.
 pub fn in_world() -> bool {
     IN_WORLD.load(Ordering::Relaxed)
+}
+
+/// When fast boot ended (the world seen, or a limit reached), if it has.
+/// `SCARLETT_KEYS_FROM_WORLD=1` times its keys from here.
+pub fn world_at() -> Option<Instant> {
+    WORLD_AT.get().copied()
+}
+
+/// START (Esc) is pressed while booting, as well as A: on unless
+/// `SCARLETT_FAST_BOOT_ESC=0`.
+pub fn esc() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| env("SCARLETT_FAST_BOOT_ESC").is_none_or(|v| truthy(Some(v))))
 }
 
 /// Presented frames seen so far (while fast boot is on).
@@ -139,7 +155,6 @@ pub fn frame_presented() -> Option<String> {
     });
     let elapsed = START.get().map_or(0, |s| s.elapsed().as_secs());
     let why = if run >= SUSTAIN {
-        WORLD_AT.get_or_init(Instant::now);
         "render targets"
     } else if frame >= max {
         "frame limit"
@@ -151,6 +166,7 @@ pub fn frame_presented() -> Option<String> {
     if IN_WORLD.swap(true, Ordering::Relaxed) {
         return None;
     }
+    WORLD_AT.get_or_init(Instant::now);
     let secs = START.get().map_or(0.0, |s| s.elapsed().as_secs_f64());
     Some(format!("fast boot: in world after {frame} frames, {secs:.1} s ({why})"))
 }

@@ -639,9 +639,10 @@ fn scripted_input(keys: &mut Vec<KeyState>) {
 }
 
 /// SCARLETT_FAST_BOOT (testing only): A on every other presented frame and
-/// START on one frame in eight until the title is in the world (logos,
-/// menus, the account prompt); then, with SCARLETT_SKIP_CUTSCENES=1, A on
-/// every other poll for a while so the intro cutscene skips; then nothing.
+/// START on one frame in eight (not with SCARLETT_FAST_BOOT_ESC=0) until the
+/// title is in the world (logos, menus, the account prompt); then, with
+/// SCARLETT_SKIP_CUTSCENES=1, A on every other poll for a while so the intro
+/// cutscene skips; then nothing.
 fn fast_boot_keys(keys: &mut Vec<KeyState>) {
     use scarlett_gpu::fastboot;
     let key = |scan: u32, vk: u8| KeyState {
@@ -660,11 +661,20 @@ fn fast_boot_keys(keys: &mut Vec<KeyState>) {
     if !fastboot::active() {
         return;
     }
-    let frame = fastboot::frame();
+    if let Some((scan, vk)) = boot_key(fastboot::frame(), fastboot::esc()) {
+        keys.push(key(scan, vk));
+    }
+}
+
+/// Fast boot's key for presented frame `frame` (scan code, virtual key):
+/// Enter (A) on even frames, Esc (START) on one frame in eight if `esc`.
+fn boot_key(frame: u64, esc: bool) -> Option<(u32, u8)> {
     if frame % 2 == 0 {
-        keys.push(key(0x1C, 0x0D));
-    } else if frame % 8 == 1 {
-        keys.push(key(0x01, 0x1B));
+        Some((0x1C, 0x0D))
+    } else if esc && frame % 8 == 1 {
+        Some((0x01, 0x1B))
+    } else {
+        None
     }
 }
 
@@ -1400,6 +1410,10 @@ mod host {
     /// time), with or without focus. A key is a
     /// letter, a digit, or `Enter`, `Esc`, `Tab`, `Back`, `Up`, `Down`,
     /// `Left`, `Right` (the stand-in pad's table maps them to buttons).
+    /// With `SCARLETT_KEYS_FROM_WORLD=1` the times count from when fast boot
+    /// reached the world (`fastboot::world_at`), and none play before it:
+    /// a scripted walk starts at the same point of every unattended run
+    /// however long the boot took.
     fn scripted() -> Vec<u8> {
         static SCRIPT: LazyLock<(Instant, Vec<(Duration, Duration, u8)>)> = LazyLock::new(|| {
             let list = std::env::var("SCARLETT_KEYS").unwrap_or_default();
@@ -1428,8 +1442,13 @@ mod host {
             });
             (Instant::now(), keys.collect())
         });
+        static FROM_WORLD: LazyLock<bool> =
+            LazyLock::new(|| std::env::var_os("SCARLETT_KEYS_FROM_WORLD").is_some_and(|v| v != "0"));
         let (start, keys) = &*SCRIPT;
-        let now = start.elapsed();
+        let start = if *FROM_WORLD { scarlett_gpu::fastboot::world_at() } else { Some(*start) };
+        // Before the world (with `SCARLETT_KEYS_FROM_WORLD`): no scripted keys.
+        let now = start.map_or(Duration::ZERO, |s| s.elapsed());
+        let keys: &[(Duration, Duration, u8)] = if start.is_some() { keys } else { &[] };
         let mut down: Vec<u8> = keys
             .iter()
             .filter(|&&(from, to, _)| (from..to).contains(&now))
@@ -1478,6 +1497,18 @@ mod host {
 
 #[cfg(test)]
 mod tests {
+    /// Fast boot presses Enter on even frames and Esc on one in eight, and
+    /// no Esc at all with `SCARLETT_FAST_BOOT_ESC=0`.
+    #[test]
+    fn fast_boot_presses_esc_only_when_asked() {
+        let with: Vec<_> = (0..16).filter_map(|f| boot_key(f, true)).collect();
+        let without: Vec<_> = (0..16).filter_map(|f| boot_key(f, false)).collect();
+        assert_eq!(with.iter().filter(|k| k.1 == 0x1B).count(), 2);
+        assert_eq!(with.iter().filter(|k| k.1 == 0x0D).count(), 8);
+        assert!(without.iter().all(|k| k.1 == 0x0D));
+        assert_eq!(without.len(), 8);
+    }
+
     use std::sync::Arc;
 
     use super::*;

@@ -314,7 +314,8 @@ The on/off switches below (`...=1`) are off when unset or set to `0`.
 | `SCARLETT_SAVE_NO_WAIT=1` | an old save version's folder is removed file by file where `remove_dir_all` fails, once, without the two seconds of retries (not a debugging switch: works in a plain build) |
 | `SCARLETT_WATCH=<rva>,...` | logs a title u32 when it changes |
 | `SCARLETT_POKE=<rva>:<byte>,...` | writes a title byte twice a second (a hang watchdog's tick, say) |
-| `SCARLETT_KEYS=30:Enter,35:X` | presses keys at those seconds, focus or not |
+| `SCARLETT_KEYS=30:Enter,35:X` | presses keys at those seconds, focus or not (`40-70:W` holds W from 40 to 70 s) |
+| `SCARLETT_KEYS_FROM_WORLD=1` | with fast boot: `SCARLETT_KEYS` times count from when the world was reached, none before it |
 | `SCARLETT_CRASH_SAVE=<rva>:<len>,...` | saves title memory to the cache folder on a crash |
 | `SCARLETT_CAPTURE=<dir>` | saves presented frames (powers of two, or `SCARLETT_CAPTURE_FRAMES=<list>`) |
 | `SCARLETT_DUMP_TARGETS=1` | with the two above, saves every render target of those frames |
