@@ -37,6 +37,8 @@ Every switch is a `SCARLETT_*` environment variable. The full list is in the sou
 | `SCARLETT_NO_WATCHDOG=1` | disarm the title's stall watchdog so it can wait for slow first-run shader builds. Set by `play-scarlett.ps1` |
 | `SCARLETT_FAST_BOOT=1` | testing only: press through logos and menus, stop once in the world |
 | `SCARLETT_FAST_BOOT_ESC=0` | with fast boot: press only A (Enter), not START (Esc), which can open the pause menu once in the world so the world is never seen |
+| `SCARLETT_FAST_BOOT_SUSTAIN=30` | with fast boot: world frames needed before fast boot stops (default 3); more keeps a slow loading screen from passing for the world |
+| `SCARLETT_FAST_BOOT_GAP=10` | with fast boot: light frames in a row that start the count of world frames again (default 1); the world's frames can come with light ones between |
 | `SCARLETT_SAVE_SLOT=<name>` | pick a save slot |
 | `SCARLETT_AUTO_INPUT=1` | press A on a timer |
 | `SCARLETT_KBM=0` | turn off keyboard and mouse as a pad (on by default; keys and settings in `engine/docs/input.md`) |
