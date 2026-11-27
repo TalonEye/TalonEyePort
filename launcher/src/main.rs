@@ -1088,8 +1088,10 @@ impl Launcher {
         for (k, v) in t.env(fsr) {
             presets::set(&mut env, k, v);
         }
-        if t.perf_log {
-            let level = env.iter().find(|(k, _)| *k == "SCARLETT_LOG").map(|(_, v)| v.clone()).unwrap_or_else(|| "info".into());
+        // Every run logs the GPU host at info, so a report has enough to diagnose a black or slow
+        // picture; the rest stays at the preset's level.
+        let level = env.iter().find(|(k, _)| *k == "SCARLETT_LOG").map(|(_, v)| v.clone()).unwrap_or_else(|| "warn".into());
+        if !level.contains("scarlett_gpu::host") {
             presets::set(&mut env, "SCARLETT_LOG", format!("{level},scarlett_gpu::host=info"));
         }
         let name = firstrun::clean_name(&self.config.player_name);
@@ -1266,6 +1268,9 @@ impl Launcher {
                 return;
             }
         };
+        if kind == RunKind::Play && self.config.tuning.free_cores && firstrun::leave_cores(&child, shaderbuild::cores()) {
+            self.log("The game runs on every core but the first two, so the desktop stays quick (Settings turns this off).", LogKind::Info);
+        }
         let stop = Arc::new(AtomicBool::new(false));
         self.stop = Some(stop.clone());
         self.running = Some(kind);
@@ -1463,6 +1468,13 @@ impl Launcher {
                     let ok = r.is_ok();
                     match r {
                         Ok(note) => {
+                            // Whatever the engine printed last, a finished build reads Done at 100%.
+                            if let Some(b) = &mut self.build {
+                                b.phase = b.phases;
+                                b.name = "Done";
+                                b.overall = 1.;
+                                b.done = b.total;
+                            }
                             if self.world_selected() {
                                 let _ = prep::write(&self.scarlett_cache(), &self.prep_stamp());
                             }
@@ -1618,7 +1630,8 @@ pub fn split_lines(mut stream: Box<dyn Read + Send>, mut each: impl FnMut(String
     let mut chunk = [0u8; 4096];
     let mut flush = |buf: &mut Vec<u8>| {
         if !buf.is_empty() {
-            let text = String::from_utf8_lossy(buf).trim_end().to_string();
+            // Without colour codes, so the Logs page, the run log and the reports read cleanly.
+            let text = perf::strip_ansi(&String::from_utf8_lossy(buf)).trim_end().to_string();
             buf.clear();
             if !text.trim().is_empty() {
                 each(text);
@@ -1737,6 +1750,15 @@ fn main() -> eframe::Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_output_lines_lose_their_colour_codes() {
+        // As the runtime prints it (see the reports in #51 and #56).
+        let out = "\u{1b}[2m2026-11-26T23:38:37.414043Z\u{1b}[0m \u{1b}[33m WARN\u{1b}[0m \u{1b}[2mscarlett_gpu::draw\u{1b}[0m\u{1b}[2m:\u{1b}[0m uploaded again \u{1b}[3mslot\u{1b}[0m\u{1b}[2m=\u{1b}[0m33899\r\n\u{1b}[0m\n";
+        let mut lines = Vec::new();
+        split_lines(Box::new(std::io::Cursor::new(out.as_bytes().to_vec())), |l| lines.push(l));
+        assert_eq!(lines, ["2026-11-26T23:38:37.414043Z  WARN scarlett_gpu::draw: uploaded again slot=33899"], "a line of only colour codes is dropped");
+    }
 
     #[test]
     fn corrupt_settings_are_kept_and_defaults_used() {

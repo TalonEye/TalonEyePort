@@ -102,10 +102,34 @@ pub fn parse_warm_plan(line: &str) -> Option<u64> {
 }
 
 /// `scarlett prepare` progress: `prepare progress library 1000 5200` -> (1000, 5200).
+#[cfg(test)]
 pub fn parse_prepare_progress(line: &str) -> Option<(u64, u64)> {
+    parse_prepare_named(line).map(|(_, d, t)| (d, t))
+}
+
+/// Any `scarlett prepare` progress line with its step name:
+/// `prepare progress shaders 300 26084` -> ("shaders", 300, 26084).
+pub fn parse_prepare_named(line: &str) -> Option<(&str, u64, u64)> {
     let mut w = line.trim().strip_prefix("prepare progress ")?.split_whitespace();
-    let (_, done, total) = (w.next()?, w.next()?, w.next()?);
-    Some((done.parse().ok()?, total.parse().ok()?))
+    let (name, done, total) = (w.next()?, w.next()?, w.next()?);
+    Some((name, done.parse().ok()?, total.parse().ok()?))
+}
+
+/// Translated shaders in a shader cache folder (`<cache>/shaders/xx/<rest of hash>`), counted
+/// while the translation runs so the number moves between the engine's progress lines.
+/// Temporary files (`.tmp-*`) are not counted.
+pub fn count_cached_shaders(dir: &Path) -> u64 {
+    let Ok(top) = std::fs::read_dir(dir) else { return 0 };
+    let mut n = 0;
+    for d in top.flatten() {
+        if d.file_name().len() != 2 || !d.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        if let Ok(files) = std::fs::read_dir(d.path()) {
+            n += files.flatten().filter(|f| !f.file_name().to_string_lossy().starts_with('.')).count() as u64;
+        }
+    }
+    n
 }
 
 /// `scarlett warm` progress: `1000 of 5200, 40 s` -> 1000.

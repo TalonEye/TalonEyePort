@@ -250,6 +250,8 @@ impl Launcher {
             }
             let r = me.feature_row(ui, w, "Keep the PC responsive", "Runs the game below normal priority, so the desktop, Task Manager and other apps stay usable while it plays. Off gives the game every core first.", false, false, 70.);
             sw(ui, r, "ft-friendly", &mut t.friendly);
+            let r = me.feature_row(ui, w, "Leave 2 cores for the desktop", "The game runs on every logical core but two (on PCs with 6 or more), so clicks and other apps stay quick. Off lets the game use every core.", false, false, 70.);
+            sw(ui, r, "ft-cores", &mut t.free_cores);
             let r = me.feature_row(ui, w, "Keyboard hints", "The on-screen key legend for keyboard and mouse (SCARLETT_KBM_HINTS, [game] kbm_hints).", true, ch(&|x| x.kbm_hints.clone()), 260.);
             let sel = tuning::HINTS.iter().position(|h| *h == t.kbm_hints);
             if let Some(k) = segs(ui, r.max.x - 14., r.center().y, "ft-hints", &["Off", "Auto", "Always"], sel, &[true; 3], 76.) {
@@ -362,9 +364,9 @@ impl Launcher {
             for (i, f) in rep.findings.iter().enumerate() {
                 let r = Self::take(ui, w, 58.);
                 card(&p, r, if f.level == Level::Bad { fade(DANGER, 0.7) } else { LINE });
-                icon(&p, if f.level == Level::Ok { Icon::Check } else { Icon::Warning }, pos2(r.min.x + 22., r.center().y), 16., level_color(f.level));
-                p.text(pos2(r.min.x + 44., r.center().y - 9.), Align2::LEFT_CENTER, fit(ui, &f.title, font(14., "semibold"), w - 190.), font(14., "semibold"), TEXT);
-                p.text(pos2(r.min.x + 44., r.center().y + 10.), Align2::LEFT_CENTER, fit(ui, &f.detail, font(12., "regular"), w - 190.), font(12., "regular"), TEXT_MUTED);
+                icon_tile(&p, r.min.x, r.center().y, if f.level == Level::Ok { Icon::Check } else { Icon::Warning }, level_color(f.level));
+                p.text(pos2(r.min.x + 68., r.center().y - 9.), Align2::LEFT_CENTER, fit(ui, &f.title, font(15., "semibold"), w - 214.), font(15., "semibold"), TEXT);
+                p.text(pos2(r.min.x + 68., r.center().y + 10.), Align2::LEFT_CENTER, fit(ui, &f.detail, font(12., "regular"), w - 214.), font(12., "regular"), TEXT_MUTED);
                 if let Some(path) = &f.path {
                     if button(ui, Rect::from_min_size(pos2(r.max.x - 124., r.center().y - 14.), vec2(110., 28.)), ("vf-show", i), "Show me", Kind::Secondary, true, Some(Icon::Folder)) {
                         if path.is_dir() { crate::saves::open_folder(path) } else { crate::saves::reveal(path) }
@@ -442,10 +444,10 @@ impl Launcher {
                 let containers: usize = s.users.iter().map(|u| u.containers.len()).sum();
                 let r = Self::take(ui, w, 58.);
                 card(&p, r, LINE);
-                icon(&p, Icon::History, pos2(r.min.x + 22., r.center().y), 16., ACCENT);
-                p.text(pos2(r.min.x + 44., r.center().y - 9.), Align2::LEFT_CENTER, format!("Slot {}", s.name), font(14.5, "semibold"), TEXT);
+                icon_tile(&p, r.min.x, r.center().y, Icon::History, ACCENT);
+                p.text(pos2(r.min.x + 68., r.center().y - 9.), Align2::LEFT_CENTER, format!("Slot {}", s.name), font(15., "semibold"), TEXT);
                 let users: Vec<String> = s.users.iter().map(|u| if u.who.is_empty() { u.id.clone() } else { u.who.clone() }).collect();
-                p.text(pos2(r.min.x + 44., r.center().y + 10.), Align2::LEFT_CENTER, fit(ui, &format!("title {}  ·  {} user(s): {}  ·  {containers} container(s)", s.title, s.users.len(), users.join(", ")), font(12., "regular"), w - 340.), font(12., "regular"), TEXT_MUTED);
+                p.text(pos2(r.min.x + 68., r.center().y + 10.), Align2::LEFT_CENTER, fit(ui, &format!("title {}  ·  {} user(s): {}  ·  {containers} container(s)", s.title, s.users.len(), users.join(", ")), font(12., "regular"), w - 340.), font(12., "regular"), TEXT_MUTED);
                 if button(ui, Rect::from_min_size(pos2(r.max.x - 284., r.center().y - 14.), vec2(130., 28.)), ("sv-backup", si), "Back up now", Kind::Primary, !me.saves_busy, Some(Icon::Download)) {
                     me.saves_command(vec!["copy".into(), s.name.clone(), format!("{}-backup-{}", s.name, crate::saves::now_stamp())]);
                 }

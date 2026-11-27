@@ -462,6 +462,13 @@ pub struct Status<'a> {
     pub color: Option<Color32>,
 }
 /// Rift's section row: icon, heading, meta line, status on the right, chevron on hover.
+/// The rounded icon tile every row uses (36 px, icon 17 px), centred 38 px in from `left`.
+pub fn icon_tile(p: &egui::Painter, left: f32, cy: f32, i: Icon, color: Color32) {
+    let tile = Rect::from_center_size(pos2(left + 38., cy), vec2(36., 36.));
+    p.rect_filled(tile, RADIUS_MD, BG_200);
+    icon(p, i, tile.center(), 17., color);
+}
+
 pub fn section_row(ui: &mut Ui, rect: Rect, id: impl std::hash::Hash, i: Icon, title: &str, meta: &str, status: Status, clickable: bool) -> bool {
     let id = egui::Id::new(id);
     let r = ui.interact(rect, id, if clickable { Sense::click() } else { Sense::hover() });

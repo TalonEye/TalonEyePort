@@ -38,6 +38,15 @@ You supply a dump of your own legally purchased copy. Nothing of any title is in
 - **Frame rate:** 3.4 fps in the world on an RTX 3060 12 GB + Ryzen 5 5600X (v0.5.0, Series S profile). The goal is a playable 30 fps.
 - **Stability over long sessions:** no long run has been recorded yet.
 
+**New in 0.5.2** (built and unit-tested, not yet measured in a game run on our RTX 3060):
+- No more black screen after loading on the Stable preset: the engine uses the game's own upscaler and falls back to it when the AMD one is missing ([#60](https://github.com/ZigZagBoi1/ScarlettPort/pull/60), [#61](https://github.com/ZigZagBoi1/ScarlettPort/issues/61)).
+- No 500 ms wait per frame for pipelines still building on first runs.
+- Levels on demand finally take effect: 18.9 to 22.0 fps median on an RX 9060 XT ([#64](https://github.com/ZigZagBoi1/ScarlettPort/pull/64)).
+- 40 shader variants restored, integer-target blending repaired, the voxel visibility shader recovered (from DexNom/VIctory); a shader size query no longer reused, which crashed AMD's compiler on 29 compute pipelines (from Belobug/VIctory-Belobug-AMD).
+- Mouse and keyboard: opt-in PC-style layout with mouse look (`SCARLETT_KBM=1`); DualSense and DualShock 4 pads read directly.
+- Clear out-of-memory message in the log ([#54](https://github.com/ZigZagBoi1/ScarlettPort/pull/54)), more GPU detail in player logs, shader progress every 100 shaders.
+- Launcher 0.5.2: live shader progress that reaches 100%, two cores left free for the desktop, an update banner with one-click Update now.
+
 **New in 0.5.0** (RTX 3060 12 GB, Ryzen 5 5600X, 32 GB, one boot each, 0.4.x defaults against 0.5.0 defaults):
 
 - The save emulation no longer sleeps retrying old save folders it cannot delete (it slept about 243 s per boot).
@@ -48,13 +57,17 @@ You supply a dump of your own legally purchased copy. Nothing of any title is in
 - Launcher 0.5.0: a first-run setup (game folder search, player name, one-time shader preparation).
 - Launcher 0.5.1: a calmer game check (the dump's own file list is advisory), a Setup page with every step's status and a way back into setup, mouse look with sensitivity, the game below normal priority so the PC stays responsive, a shader bar that reaches 100%, scrolling pages, and one-click Update now.
 
-**Known issues:** haze indoors; a crash reported mid-prologue ([#51](https://github.com/ZigZagBoi1/ScarlettPort/issues/51)).
+**Known issues:** haze indoors; NVIDIA cards are still slow (3-6 fps); on 16 GB RAM, set a larger Windows paging file ([#51](https://github.com/ZigZagBoi1/ScarlettPort/issues/51)).
 
 ### Community results
 
 Hardware reports from testers. These are **their own measurements**, not ours.
 
+- **RX 9060 XT 16 GB + Ryzen 7 7700X**, 0.5.2 (levels on demand fixed): 22.0 fps median (45.4 ms), up from 18.9. [#64](https://github.com/ZigZagBoi1/ScarlettPort/pull/64)
 - **RX 9060 XT 16 GB + Ryzen 7 7700X**, v0.4.9 after warm: 18.7 fps median (53.4 ms; best 32.9 ms), up 3.3x from v0.4.4. [#53](https://github.com/ZigZagBoi1/ScarlettPort/issues/53)
+- **RTX 4070 Ti + Core i5-13600KF**, v0.5.1: 13.4 fps average (3.3-30.1). [#76](https://github.com/ZigZagBoi1/ScarlettPort/issues/76)
+- **RTX 4060 Laptop 8 GB + Core i9-13980HX**, v0.5.1: 5-7 fps in the cell, 3-4 walking (215 ms of 275 on the GPU). [#68](https://github.com/ZigZagBoi1/ScarlettPort/issues/68)
+- **RTX 4070 12 GB + Ryzen 9 3900X**, v0.5.0: whole prologue played, 3-6 fps in the world, 30 fps in menus. [#56](https://github.com/ZigZagBoi1/ScarlettPort/issues/56)
 - **RTX 5070 12 GB + Ryzen 7 5800X3D**, v0.4.6: 7-8 fps. [#33](https://github.com/ZigZagBoi1/ScarlettPort/issues/33)
 - **RX 9060 XT**, v0.4.4: 5.3-6.0 fps. [#43](https://github.com/ZigZagBoi1/ScarlettPort/issues/43)
 - **RTX 3080 10 GB:** 3-4 fps in the world, through the prologue into the first mission. [#26](https://github.com/ZigZagBoi1/ScarlettPort/issues/26)
@@ -66,7 +79,11 @@ Hardware reports from testers. These are **their own measurements**, not ours.
 
 | Report | GPU | CPU | Version | Their result |
 |---|---|---|---|---|
+| [#64](https://github.com/ZigZagBoi1/ScarlettPort/pull/64) | RX 9060 XT 16 GB | Ryzen 7 7700X | 0.5.2 | 22.0 fps median (45.4 ms) |
 | [#53](https://github.com/ZigZagBoi1/ScarlettPort/issues/53) | RX 9060 XT 16 GB | Ryzen 7 7700X | 0.4.9, after warm | 18.7 fps median (53.4 ms; best 32.9 ms), 3.3x over 0.4.4 |
+| [#76](https://github.com/ZigZagBoi1/ScarlettPort/issues/76) | RTX 4070 Ti | Core i5-13600KF | 0.5.1 | 13.4 fps average (3.3-30.1) |
+| [#68](https://github.com/ZigZagBoi1/ScarlettPort/issues/68) | RTX 4060 Laptop 8 GB | Core i9-13980HX | 0.5.1 | 5-7 fps in the cell, 3-4 walking |
+| [#56](https://github.com/ZigZagBoi1/ScarlettPort/issues/56) | RTX 4070 12 GB | Ryzen 9 3900X | 0.5.0 | 3-6 fps in the world, whole prologue |
 | [#33](https://github.com/ZigZagBoi1/ScarlettPort/issues/33) | RTX 5070 12 GB | Ryzen 7 5800X3D | 0.4.6 | 7-8 fps |
 | [#43](https://github.com/ZigZagBoi1/ScarlettPort/issues/43) | RX 9060 XT | Ryzen 7 7700X | 0.4.4 | 5.3-6.0 fps |
 | [#26](https://github.com/ZigZagBoi1/ScarlettPort/issues/26) | RTX 3080 10 GB | Ryzen 9 3900X | | 3-4 fps in the world, prologue into the first mission |
@@ -365,7 +382,7 @@ cd ScarlettPort
 
 - While the game runs, write button names into `press.txt` (e.g. `DOWN DOWN A`) to press them.
 - Logs go to `logs\`. Attach one when you open an issue.
-- Controls: an Xbox controller works best. With no pad connected, the keyboard is a pad: Enter = A, Backspace = B, WASD = left stick, IJKL = right stick.
+- Controls: Xbox controllers and PlayStation pads (DualSense, DualShock 4, over USB or Bluetooth) both work. With no pad connected, the keyboard is a pad: Enter = A, Backspace = B, WASD = left stick, IJKL = right stick. Opt-in `SCARLETT_KBM=1` switches to a PC-style keyboard and mouse layout: `F2` or `` ` `` toggles mouse look (cursor hidden while locked; `Esc`, `P` or losing focus frees it), left/right mouse = RT/LT, middle mouse or `C` = R3, `Shift` = A, `Space` = X, `R` = B, `F` = Y, `Tab` = LB, `Q` = RB, `Ctrl` = L3, `E` = D-pad right, `V` = View; tune with `SCARLETT_MOUSE_SENS` (default `1.0`) and `SCARLETT_MOUSE_INVERT_Y=1`.
 
 **Shader build times** (12-thread CPU)
 

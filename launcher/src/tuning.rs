@@ -38,6 +38,8 @@ pub struct Tuning {
     pub mouse_sensitivity: f32,
     /// The game runs below normal priority so the desktop stays responsive while it plays.
     pub friendly: bool,
+    /// Leaves two logical cores to the desktop while the game plays (PCs with 6 or more).
+    pub free_cores: bool,
 }
 
 impl Default for Tuning {
@@ -60,6 +62,7 @@ impl Default for Tuning {
             mouse_look: true,
             mouse_sensitivity: 1.0,
             friendly: true,
+            free_cores: true,
         }
     }
 }

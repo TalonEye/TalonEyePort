@@ -54,7 +54,13 @@ impl Launcher {
         let count = if b.total > 0 { format!("  ·  {} of {}", b.done, b.total) } else { String::new() };
         let quiet = b.last_output.elapsed().as_secs();
         let eta = crate::flow::eta_secs(b.started.elapsed().as_secs(), b.overall).map(|s| format!("  ·  about {} left", flow::duration(s))).unwrap_or_default();
-        let note = if quiet >= 20 { format!("  ·  no output for {quiet} s (large shaders take minutes; still working)") } else { String::new() };
+        let note = if quiet >= 20 && b.done == 0 {
+            "  ·  Working, first progress report soon".to_string()
+        } else if quiet >= 20 {
+            "  ·  Working (large shaders take a while)".to_string()
+        } else {
+            String::new()
+        };
         format!(
             "Phase {}/{}: {}{count}  ·  now: {} ({} s)  ·  {} total{eta}{note}",
             b.phase,
@@ -132,6 +138,21 @@ impl Launcher {
                 Page::Saves => self.saves_page(&mut page, area),
                 Page::Verify => self.verify_page(&mut page, area),
                 Page::Welcome => self.welcome_page(&mut page, area, time),
+            }
+            // Every page scrolls: the lowest shape drawn at a fixed place on the page layer (its
+            // clip is the page's own; scroll areas inside a page clip to themselves) sets how far.
+            let page_clip = view.translate(vec2(0., off));
+            let drawn = ctx.graphics(|g| {
+                g.get(layer).map_or(0., |l| {
+                    l.all_entries()
+                        .filter(|c| c.clip_rect == page_clip)
+                        .map(|c| c.shape.visual_bounding_rect().max.y)
+                        .filter(|y| y.is_finite())
+                        .fold(0_f32, f32::max)
+                })
+            });
+            if drawn > view.max.y + 0.5 {
+                self.page_bottom = self.page_bottom.max(drawn);
             }
             window_controls(ui, r, ctx);
             p.rect_stroke(r, RADIUS_WINDOW, Stroke::new(1.0_f32, LINE), egui::StrokeKind::Inside);
@@ -248,6 +269,17 @@ impl Launcher {
             y += h + 6.;
             rect
         };
+        // A banner while an update is waiting: one click installs it and restarts the launcher
+        // (the replaced version is kept for a rollback in Settings, About).
+        let staged = if update_staged_label(&self.update_note) { crate::update::staged() } else { None };
+        if (self.update.is_some() || staged.is_some()) && self.running != Some(RunKind::Play) {
+            let version = self.update.as_ref().map(|u| u.version.clone()).or(staged).unwrap_or_default();
+            let meta = if self.update_busy { self.update_note.clone() } else { format!("Launcher {version} is ready. Installs and restarts in a few seconds; the current version is kept for a rollback.") };
+            let status = if self.update_busy { "Updating…" } else { "Update now" };
+            if section_row(ui, row(52.), "row-update", Icon::Download, "Update available", &meta, Status { text: status, color: Some(ACCENT) }, !self.update_busy) {
+                self.update_now(ui.ctx());
+            }
+        }
         let missing = game::missing(&self.game_checks);
         let (status, color) = if !self.game_ok {
             ("Not set".to_string(), Some(WARNING))
@@ -574,7 +606,18 @@ impl Launcher {
         let facts = [
             ("Phase", b.as_ref().map(|b| format!("{} of {}  ·  {}", b.phase, b.phases, b.name)).unwrap_or_else(|| "-".into())),
             ("Done", b.as_ref().filter(|b| b.total > 0).map(|b| format!("{} / {}", b.done, b.total)).unwrap_or_else(|| "-".into())),
-            ("Elapsed", b.as_ref().map(|b| flow::duration(b.started.elapsed().as_secs())).unwrap_or_else(|| "-".into())),
+            (
+                "Elapsed",
+                b.as_ref()
+                    .map(|b| {
+                        let e = b.started.elapsed().as_secs();
+                        match flow::eta_secs(e, b.overall) {
+                            Some(left) if b.overall < 1. => format!("{}  ·  ~{} left", flow::duration(e), flow::duration(left)),
+                            _ => flow::duration(e),
+                        }
+                    })
+                    .unwrap_or_else(|| "-".into()),
+            ),
             ("Parallel jobs", b.as_ref().map(|b| b.jobs.to_string()).unwrap_or_else(|| "-".into())),
         ];
         let (done, total) = b.as_ref().map(|b| ((b.overall * 1000.) as u64, 1000)).unwrap_or((0, 0));

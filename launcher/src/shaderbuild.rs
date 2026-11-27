@@ -272,14 +272,24 @@ fn world(job: &Job) -> Result<String, String> {
         base(&mut cmd);
         cmd.args(engine::warm_args(&job.game, p.jobs));
         log(&job.tx, format!("> scarlett warm \"{}\" --jobs {}  (phase 1 of {phases}: translate every shader, about 3 min; already translated ones are read from the cache)", job.game.display(), p.jobs));
-        p.current = "translating (the engine reports every 2,000 shaders)".into();
+        p.current = "Working, first progress report soon".into();
         send(job, &p);
         let mut tick = Instant::now();
+        let dir = shader_dir(job);
+        let mut counted = Instant::now();
         let out = run(cmd, job, None, |l| {
             if let Some(n) = engine::parse_warm(l) {
-                p.done = n.min(p.total);
-                p.current = format!("translating shaders {}–{}", n, (n + 2000).min(p.total));
+                p.done = p.done.max(n.min(p.total));
+                p.current = "translating shaders".into();
                 p.current_since = Instant::now();
+            }
+            if counted.elapsed() >= Duration::from_secs(3) {
+                counted = Instant::now();
+                let n = engine::count_cached_shaders(&dir).min(p.total);
+                if n > p.done {
+                    p.done = n;
+                    p.last_output = Instant::now();
+                }
             }
             if let Some((t, r)) = engine::parse_warm_end(l) {
                 p.done = t + r;
@@ -361,6 +371,7 @@ fn world(job: &Job) -> Result<String, String> {
             st.save(&path);
         }
     }
+    finish(job, &mut p);
     Ok(if st.on_demand.is_empty() {
         format!("Shaders built in {}.", flow::duration(p.started.elapsed().as_secs()))
     } else {
@@ -408,16 +419,35 @@ fn world_split(job: &Job) -> Result<String, String> {
         log(&job.tx, format!("> scarlett shaders \"{}\" --jobs {}  (phase 1 of 2: translate every shader, a few minutes; already translated ones are skipped)", job.game.display(), p.jobs));
         // The engine reads the game files first and prints its first count only after that.
         p.name = "Scanning game files";
-        p.current = "reading the game files first; the shader count starts after that (a few minutes)".into();
+        p.current = "Working, first progress report soon".into();
         send(job, &p);
         let mut tick = Instant::now();
+        let dir = shader_dir(job);
+        let mut counted = Instant::now();
         let out = run(cmd, job, None, |l| {
-            if let Some(n) = engine::parse_shaders(l) {
+            let reported = engine::parse_shaders(l).or_else(|| engine::parse_prepare_named(l).filter(|(n, _, _)| *n == "shaders").map(|(_, d, t)| {
+                if t > 0 {
+                    p.total = t;
+                }
+                d
+            }));
+            if let Some(n) = reported {
                 p.name = "Translating shaders";
-                p.done = n;
-                p.total = p.total.max(n);
-                p.current = format!("translating shaders {}–{}", n, (n + 1000).min(p.total));
+                p.done = p.done.max(n);
+                p.total = p.total.max(p.done);
+                p.current = "translating shaders".into();
                 p.current_since = Instant::now();
+            }
+            // Between progress lines: count the translations landing in the cache folder.
+            if counted.elapsed() >= Duration::from_secs(3) {
+                counted = Instant::now();
+                let n = engine::count_cached_shaders(&dir);
+                if n > p.done {
+                    p.name = "Translating shaders";
+                    p.done = n.min(p.total);
+                    p.current = "translating shaders".into();
+                    p.last_output = Instant::now();
+                }
             }
             if let Some(f) = engine::parse_shaders_failed(l) {
                 untranslated = f;
@@ -476,17 +506,21 @@ fn world_split(job: &Job) -> Result<String, String> {
         Outcome::Stopped | Outcome::Idle => return Err("Stopped. Press Build shaders again to resume.".into()),
     }
     let took = flow::duration(p.started.elapsed().as_secs());
-    // finished: the bar at 100% and the phase reading Done
-    p.phase = p.phases;
-    p.name = "Done";
-    p.overall = 1.;
     if p.total == 0 {
         p.total = shader_total;
     }
+    finish(job, &mut p);
+    Ok(done_note(&took, untranslated, shader_total))
+}
+
+/// A finished build: the bar at 100% and the phase reading Done.
+fn finish(job: &Job, p: &mut Progress) {
+    p.phase = p.phases;
+    p.name = "Done";
+    p.overall = 1.;
     p.done = p.total;
     p.current = "everything is prepared".into();
-    send(job, &p);
-    Ok(done_note(&took, untranslated, shader_total))
+    send(job, p);
 }
 
 /// The line shown when a build finishes; untranslated shaders are put in proportion.
@@ -519,6 +553,16 @@ fn agility_note(exe: &Path) -> String {
     }
 }
 
+/// The folder translated shaders land in: `<SCARLETT_CACHE_DIR>/shaders`.
+fn shader_dir(job: &Job) -> PathBuf {
+    job.env
+        .iter()
+        .find(|(k, _)| *k == "SCARLETT_CACHE_DIR")
+        .map(|(_, v)| PathBuf::from(v))
+        .unwrap_or_else(|| engine::scarlett_cache(&job.cache_dir))
+        .join("shaders")
+}
+
 /// Phase 2: `scarlett <step> --jobs N` (`warm`, or a command that builds every pipeline).
 fn pipelines(job: &Job, base: &dyn Fn(&mut Command), p: &mut Progress, share: f32, step: &str, planned: &mut Option<u64>) -> Result<Outcome, String> {
     let mut cmd = Command::new(&job.exe);
@@ -537,7 +581,7 @@ fn pipelines(job: &Job, base: &dyn Fn(&mut Command), p: &mut Progress, share: f3
         if let Some(n) = engine::parse_warm_made(l) {
             p.done = n.min(p.total);
         }
-        if let Some((n, t)) = engine::parse_prepare_progress(l) {
+        if let Some((n, t)) = engine::parse_prepare_named(l).filter(|(s, _, _)| *s != "shaders").map(|(_, d, t)| (d, t)) {
             if *planned != Some(t) {
                 *planned = Some(t);
                 p.total = t;

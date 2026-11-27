@@ -184,6 +184,35 @@ pub fn set_suspended(child: &std::process::Child, suspend: bool) -> bool {
     (unsafe { if suspend { NtSuspendProcess(h) } else { NtResumeProcess(h) } }) >= 0
 }
 
+/// The affinity mask that leaves the first `free` of `cores` logical cores to the desktop;
+/// None when the PC has fewer than 6 (the game then keeps them all).
+pub fn spare_mask(cores: usize, free: usize) -> Option<usize> {
+    let cores = cores.min(usize::BITS as usize);
+    if cores < 6 || free >= cores {
+        return None;
+    }
+    let all = if cores == usize::BITS as usize { usize::MAX } else { (1usize << cores) - 1 };
+    Some(all & !((1usize << free) - 1))
+}
+
+/// Keeps a running child off the first two logical cores (see [`spare_mask`]).
+#[cfg(windows)]
+pub fn leave_cores(child: &std::process::Child, cores: usize) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetProcessAffinityMask(h: *mut core::ffi::c_void, mask: usize) -> i32;
+    }
+    let Some(mask) = spare_mask(cores, 2) else { return false };
+    // SAFETY: the handle belongs to a child we own and have not waited on.
+    unsafe { SetProcessAffinityMask(child.as_raw_handle() as *mut core::ffi::c_void, mask) != 0 }
+}
+
+#[cfg(not(windows))]
+pub fn leave_cores(_: &std::process::Child, _: usize) -> bool {
+    false
+}
+
 #[cfg(not(windows))]
 pub fn set_suspended(_: &std::process::Child, _: bool) -> bool {
     false
@@ -192,6 +221,14 @@ pub fn set_suspended(_: &std::process::Child, _: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spare_mask_leaves_two_cores() {
+        assert_eq!(spare_mask(4, 2), None);
+        assert_eq!(spare_mask(6, 2), Some(0b111100));
+        assert_eq!(spare_mask(16, 2), Some(0xFFFC));
+        assert_eq!(spare_mask(64, 2), Some(usize::MAX & !3));
+    }
 
     fn tmp(n: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("sp-fr-{n}-{}", std::process::id()));

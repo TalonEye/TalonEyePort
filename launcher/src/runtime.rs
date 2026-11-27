@@ -49,6 +49,12 @@ fn legacy_name(key: &str) -> Option<String> {
 /// Sets a runtime switch on `cmd` under its `SCARLETT_*` name.
 pub fn set_switch(cmd: &mut std::process::Command, key: &str, value: &str) {
     cmd.env(key, value);
+    // Local and older builds read some switches (the upscaler, watchdog, relay and pipeline
+    // wait among them) only under the former spelling; the bundled runtime prefers the new
+    // name, so setting both to the same value is safe.
+    if let Some(old) = legacy_name(key) {
+        cmd.env(old, value);
+    }
 }
 
 /// Clears a runtime switch (also under its former spelling, which the runtime would read instead).

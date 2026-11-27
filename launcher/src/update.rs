@@ -87,9 +87,25 @@ pub fn explain(e: &str) -> String {
 }
 
 /// Some(release) when one newer than this launcher is published.
+/// GitHub's "Latest" release (full releases only; pre-releases never are).
+const LATEST: &str = "https://api.github.com/repos/ZigZagBoi1/ScarlettPort/releases/latest";
+
+/// Some(release) when one newer than this launcher is published: the newer of GitHub's Latest
+/// release and the newest in the recent list (which also has pre-releases), so neither kind of
+/// release is missed.
 pub fn check() -> Result<Option<Release>, String> {
-    let json: serde_json::Value = get(API)?.into_json().map_err(|e| e.to_string())?;
-    Ok(pick(&json).filter(|r| newer(&r.version, env!("CARGO_PKG_VERSION"))))
+    let latest = get(LATEST).and_then(|r| r.into_json::<serde_json::Value>().map_err(|e| e.to_string()));
+    let listed = get(API).and_then(|r| r.into_json::<serde_json::Value>().map_err(|e| e.to_string()));
+    if let (Err(e), Err(_)) = (&latest, &listed) {
+        return Err(e.clone());
+    }
+    let a = latest.ok().and_then(|j| pick(&serde_json::Value::Array(vec![j])));
+    let b = listed.ok().and_then(|j| pick(&j));
+    let best = match (a, b) {
+        (Some(a), Some(b)) => Some(if newer(&b.version, &a.version) { b } else { a }),
+        (a, b) => a.or(b),
+    };
+    Ok(best.filter(|r| newer(&r.version, env!("CARGO_PKG_VERSION"))))
 }
 
 pub fn base_dir() -> Option<PathBuf> {
