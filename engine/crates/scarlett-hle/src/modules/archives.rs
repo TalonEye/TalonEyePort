@@ -43,10 +43,6 @@ const NAME: u64 = 0x73bc_b72d_ce74_f11f;
 const COMPRESSION: u64 = 0xe0c1_2d7a_5d48_84c5;
 const DIGESTS: u64 = 0x2860_30a3_58a7_89fb;
 
-/// The kinds of entry (byte 5 of the main record) a mod file can stand in for.
-const ORDINARY: u8 = 0xff;
-const ARCHIVE: u8 = 0;
-
 /// Mod files start this far apart in the range after an archive's end.
 const ALIGN: u64 = 4096;
 
@@ -789,17 +785,13 @@ fn replace(table: &mut [u8], (dir, map, data): (usize, usize, usize), tail: &Tai
             continue;
         };
         let record = &mut table[main.at + m * 0x18..][..0x18];
-        // Byte 5 is the entry's kind: 0xff an ordinary file, 0 an archive inside the archive, else
-        // a resource of that type, whose rows are not known well enough yet to stand in for.
-        // An ordinary file or an archive with no compression or digest row is stored as it is.
+        // Byte 5 is the entry's kind (0xff an ordinary file, 0 an archive inside the archive, else
+        // a resource of that type: 0x0b is PSO metadata) and is kept. How the data is stored is
+        // said by byte 6 and the columns: a compression row is zlib in 64 KiB chunks, byte 6 = 1
+        // with none is one raw deflate stream, and neither is the data as it is.
         let kind = record[5];
-        if kind != ORDINARY && kind != ARCHIVE {
-            if !part.reported.swap(true, Ordering::Relaxed) {
-                tracing::warn!(archive = %tail.key, path = %part.path, r#mod = %part.by, kind, "a mod's file stands in for a resource entry, which is not supported yet; the entry is left as it is");
-            }
-            continue;
-        }
         record[..5].copy_from_slice(&(part.at / 16).to_le_bytes()[..5]);
+        record[6] = 0;
         record[8..16].copy_from_slice(&part.len.div_ceil(16).to_le_bytes());
         record[16..24].copy_from_slice(&part.len.to_le_bytes());
         // Stored as it is: no compression parameters, no digests.
@@ -809,7 +801,7 @@ fn replace(table: &mut [u8], (dir, map, data): (usize, usize, usize), tail: &Tai
         }
         changed += 1;
         if !part.applied.swap(true, Ordering::Relaxed) {
-            tracing::info!(archive = %tail.key, path = %part.path, r#mod = %part.by, bytes = part.len, "an archive entry is replaced by a mod's file");
+            tracing::info!(archive = %tail.key, path = %part.path, r#mod = %part.by, bytes = part.len, kind, "an archive entry is replaced by a mod's file");
         }
     }
     for part in &tail.parts {
@@ -1044,14 +1036,16 @@ mod tests {
     }
 
     #[test]
-    fn a_resource_entry_is_left_as_it_is() {
-        let (mut t, layout) = synthetic(&[name_hash("a.ytd")]);
+    fn a_resource_entry_keeps_its_kind_and_is_stored_as_it_is() {
+        let (mut t, layout) = synthetic(&[name_hash("data/a")]);
         let (_, _, data) = layout;
+        // A PSO resource stored as one raw deflate stream (byte 6 = 1).
         t[data + 5] = 0x0b;
-        let before = t.clone();
-        let tail = tail(0, 0x2000, vec![part("a.ytd", 0x1000, 5)]);
-        assert_eq!(replace(&mut t, layout, &tail), 0);
-        assert_eq!(&t[..], &before[..]);
+        t[data + 6] = 1;
+        t[data + 7] = 0x22;
+        let tail = tail(0, 0x2000, vec![part("data/a.pso", 0x1000, 5)]);
+        assert_eq!(replace(&mut t, layout, &tail), 1);
+        assert_eq!(&t[data..data + 8], &[0x00, 0x01, 0, 0, 0, 0x0b, 0, 0x22]);
     }
 
     #[test]

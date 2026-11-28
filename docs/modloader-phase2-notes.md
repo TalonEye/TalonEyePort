@@ -121,7 +121,17 @@ the order of the rows.
 - `+0x08`: u64 stored size in 16-byte units.
 - `+0x10`: u64 size once unpacked.
 
-Whether an entry is compressed is said by its columns, not by `+0x05`. Ordinary files with no
+How an entry is stored is said by byte `+0x06` and the columns, not by `+0x05`: a compression row
+means zlib in 64 KiB chunks (the row's u16 at `+4` is the chunk count, the u16 at `+6` is always
+`0x0308`); byte 6 = 1 with no compression row means one raw deflate stream; neither means the data
+as it is. Resources of kind `0x0b` are metadata, PSO (`PSIN`) or binary XML (`RBF0`), and unpack to
+the file as it is. `data.rpf` has one more column, `ba180afb232d1b4b`, not yet looked at.
+
+Replacing a resource the same way as an ordinary file (kind kept, byte 6 cleared, no compression
+or digest row) works in game: `data/heightmapStreaming` and `data/ui/loose/map/data/gps` from
+`data.rpf`, shipped unchanged, were read from the mod and the game ran normally (2026-11-28).
+
+Older notes, still true for ordinary files: Ordinary files with no
 compression row are stored as they are, the stored size covering the unpacked size (7,162 of
 7,162 checked in nested archives); with a compression row (`…01000803`, the u16 at `+4` looks like
 a count of 64 KiB chunks) the data is zlib, or stored as it is when the stored size covers the
@@ -151,8 +161,8 @@ ID from `0x14056ee50`.
 4. **Replace an entry.** Built (`scarlett-hle/src/modules/archives.rs`, `replace`). After the
    title's parse, an entry whose name hash (with or without the extension) matches a mod file gets
    an offset past the end of the archive (each file 4096-aligned), both sizes from the mod file,
-   and no rows in the compression and digest columns; its kind (`+0x05`) is kept. Resource entries
-   are left alone for now. Bytes 6–7 of the record and
+   no rows in the compression and digest columns, and byte 6 cleared; its kind (`+0x05`) is kept.
+   Resources are replaced the same way. Bytes 6–7 of the record and
    the `b7076b…` column are left as they are.
 5. **Serve the reads.** Built. `CreateFileW`, `CreateFileA` and `CreateFile2` note handles to
    archives that mods change; `ReadFile` past the real end, DirectStorage `read_at` past it, and
