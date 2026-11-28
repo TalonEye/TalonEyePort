@@ -24,14 +24,53 @@ pub struct Config {
     pub test_titles: Vec<PathBuf>,
     /// The config file that was read, if any.
     pub source: Option<PathBuf>,
+    /// `[mods]`: mod folders laid over the title's package drive.
+    pub mods: Mods,
+}
+
+/// Mods laid over the title's package drive, loaded as they are.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Mods {
+    /// The toggle: off unless the config file or `SCARLETT_MODS` turns it on.
+    pub enabled: bool,
+    /// The folder holding one folder per mod. `None` = `<data_dir>/mods`.
+    pub dir: Option<PathBuf>,
 }
 
 /// Other sections are ignored: the ScarlettPort launcher writes `[display]`, `[game]` and
-/// `[pace]` for older runtimes into the same file. Keys inside `[paths]` stay checked.
+/// `[pace]` for older runtimes into the same file. Keys inside `[paths]` and `[mods]` stay
+/// checked.
 #[derive(Debug, Default, Deserialize)]
 struct FileConfig {
     #[serde(default)]
     paths: FilePaths,
+    #[serde(default)]
+    mods: FileMods,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileMods {
+    #[serde(default)]
+    enabled: bool,
+    /// Reserved for code mods (a later phase): accepted so the launcher may write it.
+    #[serde(default)]
+    #[allow(dead_code)]
+    plugins: bool,
+    dir: Option<PathBuf>,
+}
+
+/// `SCARLETT_MODS` (`0` or `1`) overrides the file's toggle for one run.
+fn resolve_mods(file: FileMods, env: impl Fn(&str) -> Option<std::ffi::OsString>) -> Mods {
+    let enabled = match env("SCARLETT_MODS").as_deref().and_then(|v| v.to_str()) {
+        Some("0") => false,
+        Some("1") => true,
+        _ => file.enabled,
+    };
+    Mods {
+        enabled,
+        dir: file.dir.filter(|d| !d.as_os_str().is_empty()),
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -71,7 +110,24 @@ impl Config {
             }
             None => (None, FileConfig::default()),
         };
-        Self::resolve(parsed.paths, source, |k| std::env::var_os(k))
+        let mut cfg = Self::resolve(parsed.paths, source, |k| std::env::var_os(k))?;
+        cfg.mods = resolve_mods(parsed.mods, |k| std::env::var_os(k));
+        Ok(cfg)
+    }
+
+    /// The folder of mod folders when mods are on, after checking the asset
+    /// policy; `None` when they are off. The folder is not created.
+    pub fn mods_dir(&self) -> Result<Option<PathBuf>> {
+        if !self.mods.enabled {
+            return Ok(None);
+        }
+        let dir = self
+            .mods
+            .dir
+            .clone()
+            .unwrap_or_else(|| self.data_dir.join("mods"));
+        ensure_outside_repo(&dir)?;
+        Ok(Some(dir))
     }
 
     fn resolve(
@@ -98,6 +154,7 @@ impl Config {
             data_dir,
             test_titles,
             source,
+            mods: Mods::default(),
         })
     }
 
@@ -355,6 +412,48 @@ mod tests {
         let parsed: FileConfig = toml::from_str(text).unwrap();
         assert_eq!(parsed.paths.game_dir, Some(PathBuf::from("D:/game")));
         assert!(toml::from_str::<FileConfig>("[paths]\ngame_folder = \"D:/game\"\n").is_err());
+    }
+
+    #[test]
+    fn mods_section_parses_and_stays_checked() {
+        let text = "[mods]\nenabled = true\nplugins = false\ndir = \"D:/my-mods\"\n";
+        let parsed: FileConfig = toml::from_str(text).unwrap();
+        let mods = resolve_mods(parsed.mods, |_| None);
+        assert!(mods.enabled);
+        assert_eq!(mods.dir, Some(PathBuf::from("D:/my-mods")));
+        assert!(toml::from_str::<FileConfig>("[mods]\nenable = true\n").is_err());
+        let none: FileConfig = toml::from_str("").unwrap();
+        assert_eq!(resolve_mods(none.mods, |_| None), Mods::default());
+    }
+
+    #[test]
+    fn mods_env_overrides_the_toggle() {
+        let on = FileMods {
+            enabled: true,
+            ..Default::default()
+        };
+        let env = |k: &str| (k == "SCARLETT_MODS").then(|| OsString::from("0"));
+        assert!(!resolve_mods(on, env).enabled);
+        let env = |k: &str| (k == "SCARLETT_MODS").then(|| OsString::from("1"));
+        assert!(resolve_mods(FileMods::default(), env).enabled);
+        let env = |k: &str| (k == "SCARLETT_MODS").then(OsString::new);
+        assert!(!resolve_mods(FileMods::default(), env).enabled);
+    }
+
+    #[test]
+    fn mods_dir_defaults_under_data_and_is_none_when_off() {
+        let data = tempfile::tempdir().unwrap();
+        let mut cfg = Config {
+            data_dir: data.path().to_path_buf(),
+            ..Default::default()
+        };
+        assert_eq!(cfg.mods_dir().unwrap(), None);
+        cfg.mods.enabled = true;
+        assert_eq!(cfg.mods_dir().unwrap(), Some(data.path().join("mods")));
+        assert!(
+            !data.path().join("mods").exists(),
+            "the folder is not created"
+        );
     }
 
     #[test]

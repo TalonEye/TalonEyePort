@@ -111,6 +111,20 @@ pub fn run(
     );
     // The console's fixed drives: the package as `G:`, temporary files `T:`.
     scarlett_hle::modules::files::mount_at('G', title_dir);
+    // Mods, when on, are laid over `G:` before the title reads anything.
+    if let Some(dir) = cfg.mods_dir()? {
+        let summary = scarlett_hle::modules::mods::install('G', title_dir, &dir)
+            .with_context(|| format!("reading the mods folder {}", dir.display()))?;
+        scarlett_hle::modules::mods::log(&summary, &dir);
+        println!(
+            "mods           {} from {} ({} replaced, {} added, {} conflicts)",
+            summary.mods.len(),
+            dir.display(),
+            summary.replaced,
+            summary.added,
+            summary.conflicts.len()
+        );
+    }
     let temp = cfg.data_subdir(&format!("{:08X}/temp", title.id))?;
     scarlett_hle::modules::files::mount_at('T', &temp);
     scarlett_hle::runtime::set_title(scarlett_hle::runtime::Title { storage, ..title });

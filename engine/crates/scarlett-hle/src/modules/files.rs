@@ -143,8 +143,28 @@ fn verbatim(root: &[u16], tail: &[u16]) -> Vec<u16> {
 }
 
 /// The host path, NUL-terminated, for `path` (without its NUL) if it is on
-/// a virtual drive.
+/// a virtual drive, for reading: a file a mod ships for that path stands in
+/// for the drive's own ([`super::mods`]).
 pub(crate) fn translate(path: &[u16]) -> Option<Vec<u16>> {
+    translate_for(path, Access::Read)
+}
+
+/// Whether a call only reads the file at a path, or may change it. Mods are
+/// never written: a call that may change a file always reaches the drive's
+/// own folder.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    Read,
+    Write,
+}
+
+impl Access {
+    fn writes_if(writes: bool) -> Self {
+        if writes { Self::Write } else { Self::Read }
+    }
+}
+
+fn translate_for(path: &[u16], access: Access) -> Option<Vec<u16>> {
     let (prefix, rest) = match path.strip_prefix(&VERBATIM[..]) {
         Some(rest) => (&VERBATIM[..], rest),
         None => (&[][..], path),
@@ -160,6 +180,18 @@ pub(crate) fn translate(path: &[u16]) -> Option<Vec<u16>> {
     let drives = drives();
     let (_, root) = drives.iter().find(|(l, _)| *l == letter)?;
     let tail = &rest[2..];
+    if access == Access::Read
+        && let Some((host, name)) = super::mods::lookup(letter, tail)
+    {
+        tracing::debug!(path = %String::from_utf16_lossy(path), r#mod = %name, "title path from a mod");
+        let mut out = if !prefix.is_empty() || host.len() >= LONG {
+            verbatim(&host, &[])
+        } else {
+            host
+        };
+        out.push(0);
+        return Some(out);
+    }
     if prefix.is_empty() && root.len() + tail.len() >= LONG {
         let mut out = verbatim(root, tail);
         out.push(0);
@@ -194,6 +226,15 @@ impl Wide {
 }
 
 fn wide(path: *const u16) -> Wide {
+    wide_for(path, Access::Read)
+}
+
+/// [`wide`] for a call that may change the file or its folder.
+fn wide_write(path: *const u16) -> Wide {
+    wide_for(path, Access::Write)
+}
+
+fn wide_for(path: *const u16, access: Access) -> Wide {
     if path.is_null() {
         return Wide(path, None);
     }
@@ -202,7 +243,7 @@ fn wide(path: *const u16) -> Wide {
         let len = (0..).take_while(|&i| *path.add(i) != 0).count();
         std::slice::from_raw_parts(path, len)
     };
-    let host = translate(path_slice);
+    let host = translate_for(path_slice, access);
     trace(path_slice, host.as_deref());
     Wide(path, host)
 }
@@ -219,6 +260,15 @@ fn trace(path: &[u16], host: Option<&[u16]>) {
 /// A narrow path (ANSI code page, as the host decodes it) on a virtual
 /// drive, as a wide host path.
 fn narrow(path: *const c_char) -> Option<Vec<u16>> {
+    narrow_for(path, Access::Read)
+}
+
+/// [`narrow`] for a call that may change the file or its folder.
+fn narrow_write(path: *const c_char) -> Option<Vec<u16>> {
+    narrow_for(path, Access::Write)
+}
+
+fn narrow_for(path: *const c_char, access: Access) -> Option<Vec<u16>> {
     if path.is_null() {
         return None;
     }
@@ -240,9 +290,56 @@ fn narrow(path: *const c_char) -> Option<Vec<u16>> {
         MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), len, wide.as_mut_ptr(), n);
         wide
     };
-    let host = translate(&wide);
+    let host = translate_for(&wide, access);
     trace(&wide, host.as_deref());
     host
+}
+
+/// Whether a `CreateFile` call may change the file: it asks for write,
+/// append or delete access, or creates or truncates.
+fn create_writes(access: u32, disposition: u32) -> bool {
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const GENERIC_ALL: u32 = 0x1000_0000;
+    const FILE_WRITE_DATA: u32 = 0x2;
+    const FILE_APPEND_DATA: u32 = 0x4;
+    const DELETE: u32 = 0x1_0000;
+    const CREATE_NEW: u32 = 1;
+    const CREATE_ALWAYS: u32 = 2;
+    const TRUNCATE_EXISTING: u32 = 5;
+    access & (GENERIC_WRITE | GENERIC_ALL | FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE) != 0
+        || matches!(disposition, CREATE_NEW | CREATE_ALWAYS | TRUNCATE_EXISTING)
+}
+
+/// Whether a C `fopen` mode (`"rb"`, `"w+"`, `"a, ccs=UTF-8"`), without its
+/// NUL, may change the file.
+fn mode_writes(mode: &[u16]) -> bool {
+    mode.iter()
+        .take_while(|&&c| c != u16::from(b','))
+        .any(|&c| [b'w', b'a', b'+'].into_iter().any(|m| c == u16::from(m)))
+}
+
+/// Whether `_open` flags may change the file (`_O_WRONLY`, `_O_RDWR`,
+/// `_O_APPEND`, `_O_CREAT`, `_O_TRUNC`).
+fn open_writes(flags: i32) -> bool {
+    flags & (0x1 | 0x2 | 0x8 | 0x100 | 0x200) != 0
+}
+
+/// Whether an `ios_base::openmode` may change the file (`out`, `app`,
+/// `trunc`).
+fn openmode_writes(mode: i32) -> bool {
+    mode & (0x02 | 0x08 | 0x10) != 0
+}
+
+/// A title's wide mode string without its NUL; empty for null.
+fn wide_mode<'a>(mode: *const u16) -> &'a [u16] {
+    if mode.is_null() {
+        return &[];
+    }
+    // SAFETY: the title passes a NUL-terminated mode string.
+    unsafe {
+        let len = (0..).take_while(|&i| *mode.add(i) != 0).count();
+        std::slice::from_raw_parts(mode, len)
+    }
 }
 
 /// An ASCII mode string (`"rb"`, `"w, ccs=UTF-8"`) for a wide CRT call.
@@ -269,7 +366,7 @@ pub extern "system" fn CreateFileW(
     flags: u32,
     template: Handle,
 ) -> Handle {
-    let p = wide(path);
+    let p = wide_for(path, Access::writes_if(create_writes(access, disposition)));
     host!("kernel32.dll", "CreateFileW": extern "system" fn(*const u16, u32, u32, *const c_void, u32, u32, Handle) -> Handle)(
         p.ptr(),
         access,
@@ -290,7 +387,7 @@ pub extern "system" fn CreateFileA(
     flags: u32,
     template: Handle,
 ) -> Handle {
-    match narrow(path) {
+    match narrow_for(path, Access::writes_if(create_writes(access, disposition))) {
         Some(p) => {
             host!("kernel32.dll", "CreateFileW": extern "system" fn(*const u16, u32, u32, *const c_void, u32, u32, Handle) -> Handle)(
                 p.as_ptr(),
@@ -324,7 +421,7 @@ pub extern "system" fn CreateFile2(
     disposition: u32,
     params: *const c_void,
 ) -> Handle {
-    let p = wide(path);
+    let p = wide_for(path, Access::writes_if(create_writes(access, disposition)));
     host!("kernel32.dll", "CreateFile2": extern "system" fn(*const u16, u32, u32, u32, *const c_void) -> Handle)(
         p.ptr(),
         access,
@@ -335,7 +432,7 @@ pub extern "system" fn CreateFile2(
 }
 
 pub extern "system" fn DeleteFileA(path: *const c_char) -> i32 {
-    match narrow(path) {
+    match narrow_write(path) {
         Some(p) => {
             host!("kernel32.dll", "DeleteFileW": extern "system" fn(*const u16) -> i32)(p.as_ptr())
         }
@@ -346,17 +443,17 @@ pub extern "system" fn DeleteFileA(path: *const c_char) -> i32 {
 }
 
 pub extern "system" fn DeleteFileW(path: *const u16) -> i32 {
-    let p = wide(path);
+    let p = wide_write(path);
     host!("kernel32.dll", "DeleteFileW": extern "system" fn(*const u16) -> i32)(p.ptr())
 }
 
 pub extern "system" fn RemoveDirectoryW(path: *const u16) -> i32 {
-    let p = wide(path);
+    let p = wide_write(path);
     host!("kernel32.dll", "RemoveDirectoryW": extern "system" fn(*const u16) -> i32)(p.ptr())
 }
 
 pub extern "system" fn SetFileAttributesW(path: *const u16, attributes: u32) -> i32 {
-    let p = wide(path);
+    let p = wide_write(path);
     host!("kernel32.dll", "SetFileAttributesW": extern "system" fn(*const u16, u32) -> i32)(
         p.ptr(),
         attributes,
@@ -379,7 +476,7 @@ pub extern "system" fn GetFileAttributesA(path: *const c_char) -> u32 {
 }
 
 pub extern "system" fn CreateDirectoryW(path: *const u16, security: *const c_void) -> i32 {
-    let p = wide(path);
+    let p = wide_write(path);
     host!("kernel32.dll", "CreateDirectoryW": extern "system" fn(*const u16, *const c_void) -> i32)(
         p.ptr(),
         security,
@@ -473,7 +570,7 @@ pub extern "system" fn FindFirstFileExW(
 }
 
 pub extern "system" fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32 {
-    let (from, to) = (wide(from), wide(to));
+    let (from, to) = (wide_write(from), wide_write(to));
     host!("kernel32.dll", "MoveFileExW": extern "system" fn(*const u16, *const u16, u32) -> i32)(
         from.ptr(),
         to.ptr(),
@@ -499,12 +596,12 @@ pub extern "system" fn SetCurrentDirectoryA(path: *const c_char) -> i32 {
 // The C runtime (ucrtbase, which the title's CRT imports bind to).
 
 pub extern "C" fn _wfopen(path: *const u16, mode: *const u16) -> File {
-    let p = wide(path);
+    let p = wide_for(path, Access::writes_if(mode_writes(wide_mode(mode))));
     host!("ucrtbase.dll", "_wfopen": extern "C" fn(*const u16, *const u16) -> File)(p.ptr(), mode)
 }
 
 pub extern "C" fn _wfopen_s(out: *mut File, path: *const u16, mode: *const u16) -> i32 {
-    let p = wide(path);
+    let p = wide_for(path, Access::writes_if(mode_writes(wide_mode(mode))));
     host!("ucrtbase.dll", "_wfopen_s": extern "C" fn(*mut File, *const u16, *const u16) -> i32)(
         out,
         p.ptr(),
@@ -513,7 +610,7 @@ pub extern "C" fn _wfopen_s(out: *mut File, path: *const u16, mode: *const u16) 
 }
 
 pub extern "C" fn _wfsopen(path: *const u16, mode: *const u16, share: i32) -> File {
-    let p = wide(path);
+    let p = wide_for(path, Access::writes_if(mode_writes(wide_mode(mode))));
     host!("ucrtbase.dll", "_wfsopen": extern "C" fn(*const u16, *const u16, i32) -> File)(
         p.ptr(),
         mode,
@@ -578,7 +675,9 @@ pub extern "C" fn fread(buffer: *mut u8, size: usize, count: usize, stream: File
 }
 
 pub extern "C" fn fopen(path: *const c_char, mode: *const c_char) -> File {
-    match narrow(path) {
+    let mode_wide = widen(mode);
+    let access = Access::writes_if(mode_writes(&mode_wide[..mode_wide.len() - 1]));
+    match narrow_for(path, access) {
         Some(p) => host!("ucrtbase.dll", "_wfopen": extern "C" fn(*const u16, *const u16) -> File)(
             p.as_ptr(),
             widen(mode).as_ptr(),
@@ -592,7 +691,9 @@ pub extern "C" fn fopen(path: *const c_char, mode: *const c_char) -> File {
 }
 
 pub extern "C" fn fopen_s(out: *mut File, path: *const c_char, mode: *const c_char) -> i32 {
-    match narrow(path) {
+    let mode_wide = widen(mode);
+    let access = Access::writes_if(mode_writes(&mode_wide[..mode_wide.len() - 1]));
+    match narrow_for(path, access) {
         Some(p) => {
             host!("ucrtbase.dll", "_wfopen_s": extern "C" fn(*mut File, *const u16, *const u16) -> i32)(
                 out,
@@ -611,7 +712,7 @@ pub extern "C" fn fopen_s(out: *mut File, path: *const c_char, mode: *const c_ch
 /// `_open(path, flags[, mode])` is variadic; on x64 the optional integer
 /// travels in the same register either way, so it is passed on as is.
 pub extern "C" fn _open(path: *const c_char, flags: i32, mode: i32) -> i32 {
-    match narrow(path) {
+    match narrow_for(path, Access::writes_if(open_writes(flags))) {
         Some(p) => host!("ucrtbase.dll", "_wopen": extern "C" fn(*const u16, i32, i32) -> i32)(
             p.as_ptr(),
             flags,
@@ -625,7 +726,7 @@ pub extern "C" fn _open(path: *const c_char, flags: i32, mode: i32) -> i32 {
 
 /// See [`_open`]; used by libHttpClient.
 pub extern "C" fn _wopen(path: *const u16, flags: i32, mode: i32) -> i32 {
-    let p = wide(path);
+    let p = wide_for(path, Access::writes_if(open_writes(flags)));
     host!("ucrtbase.dll", "_wopen": extern "C" fn(*const u16, i32, i32) -> i32)(
         p.ptr(),
         flags,
@@ -655,19 +756,19 @@ pub extern "C" fn _stat64i32(path: *const c_char, stat: *mut c_void) -> i32 {
 }
 
 pub extern "C" fn remove(path: *const c_char) -> i32 {
-    match narrow(path) {
+    match narrow_write(path) {
         Some(p) => host!("ucrtbase.dll", "_wremove": extern "C" fn(*const u16) -> i32)(p.as_ptr()),
         None => host!("ucrtbase.dll", "remove": extern "C" fn(*const c_char) -> i32)(path),
     }
 }
 
 pub extern "C" fn _wchmod(path: *const u16, mode: i32) -> i32 {
-    let p = wide(path);
+    let p = wide_write(path);
     host!("ucrtbase.dll", "_wchmod": extern "C" fn(*const u16, i32) -> i32)(p.ptr(), mode)
 }
 
 pub extern "C" fn _wutime64(path: *const u16, times: *mut c_void) -> i32 {
-    let p = wide(path);
+    let p = wide_write(path);
     host!("ucrtbase.dll", "_wutime64": extern "C" fn(*const u16, *mut c_void) -> i32)(
         p.ptr(),
         times,
@@ -681,7 +782,7 @@ const FIOPEN_WIDE: &str = "?_Fiopen@std@@YAPEAU_iobuf@@PEB_WHH@Z";
 
 /// `_Fiopen(const wchar_t* path, ios_base::openmode, int protection)`.
 extern "C" fn fiopen_wide(path: *const u16, mode: i32, protection: i32) -> File {
-    let p = wide(path);
+    let p = wide_for(path, Access::writes_if(openmode_writes(mode)));
     host!("msvcp140.dll", "?_Fiopen@std@@YAPEAU_iobuf@@PEB_WHH@Z": extern "C" fn(*const u16, i32, i32) -> File)(
         p.ptr(),
         mode,
@@ -691,7 +792,7 @@ extern "C" fn fiopen_wide(path: *const u16, mode: i32, protection: i32) -> File 
 
 /// `_Fiopen(const char* path, ios_base::openmode, int protection)`.
 extern "C" fn fiopen(path: *const c_char, mode: i32, protection: i32) -> File {
-    match narrow(path) {
+    match narrow_for(path, Access::writes_if(openmode_writes(mode))) {
         Some(p) => {
             host!("msvcp140.dll", "?_Fiopen@std@@YAPEAU_iobuf@@PEB_WHH@Z": extern "C" fn(*const u16, i32, i32) -> File)(
                 p.as_ptr(),
@@ -1017,5 +1118,126 @@ mod tests {
             .map(|e| e.unwrap().file_name())
             .collect();
         assert_eq!(names, ["present.txt"]);
+    }
+
+    /// Mods are laid over one drive, read as they are, and never written.
+    /// One test, as the overlay is process-wide; `K:` keeps it apart from the
+    /// letters other tests mount.
+    #[test]
+    fn mods_stand_in_for_reads_only() {
+        use super::super::mods;
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const GENERIC_WRITE: u32 = 0x4000_0000;
+        const OPEN_EXISTING: u32 = 3;
+        const CREATE_ALWAYS: u32 = 2;
+        let close = host!("kernel32.dll", "CloseHandle": extern "system" fn(Handle) -> i32);
+        let null = std::ptr::null_mut();
+
+        let package = tempfile::tempdir().unwrap();
+        std::fs::write(package.path().join("a.rpf"), b"dump-a").unwrap();
+        std::fs::write(package.path().join("b.rpf"), b"dump-b").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        for (path, bytes) in [
+            (&["20-second", "A.RPF"][..], &b"second-a"[..]),
+            (&["20-second", "new", "c.dat"], b"new-c"),
+            (&["10-first", "a.rpf"], b"first-a"),
+        ] {
+            let path: std::path::PathBuf = path.iter().fold(dir.path().into(), |p, s| p.join(s));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let second_a = dir.path().join("20-second").join("A.RPF");
+        let new_c = dir.path().join("20-second").join("new").join("c.dat");
+        let in_package = |name: &str| Some(format!(r"{}\{name}", package.path().display()));
+        mount_at('K', package.path());
+        let tr = |p: &str| translate(&w(p)[..p.encode_utf16().count()]).map(|h| text(&h));
+
+        // No mods folder: every path reaches the drive.
+        let summary = mods::install('K', package.path(), &dir.path().join("absent")).unwrap();
+        assert_eq!(summary, mods::Summary::default());
+        assert_eq!(tr(r"K:\a.rpf"), in_package("a.rpf"));
+
+        let summary = mods::install('K', package.path(), dir.path()).unwrap();
+        assert_eq!(
+            summary.mods,
+            [("10-first".to_owned(), 1), ("20-second".to_owned(), 2)]
+        );
+        assert_eq!((summary.replaced, summary.added), (1, 1));
+        assert_eq!(
+            summary.conflicts,
+            [(
+                "A.RPF".to_owned(),
+                vec!["10-first".to_owned(), "20-second".to_owned()]
+            )]
+        );
+
+        // The last folder by name wins, whatever the case or separators.
+        let second = Some(second_a.display().to_string());
+        assert_eq!(tr(r"K:\a.rpf"), second);
+        assert_eq!(tr("k:/./x/../A.RPF"), second);
+        assert_eq!(
+            tr(r"\\?\K:\a.rpf"),
+            Some(format!(r"\\?\{}", second_a.display()))
+        );
+        // Added files are found; the rest still comes from the dump.
+        assert_eq!(tr(r"K:\new\c.dat"), Some(new_c.display().to_string()));
+        assert_eq!(tr(r"K:\b.rpf"), in_package("b.rpf"));
+
+        // The title's own call reads the mod's bytes as shipped.
+        let h = CreateFileW(
+            w(r"K:\a.rpf").as_ptr(),
+            GENERIC_READ,
+            1,
+            null,
+            OPEN_EXISTING,
+            0,
+            null,
+        );
+        assert_ne!(h as isize, -1);
+        let mut buf = [0u8; 16];
+        let mut n = 0u32;
+        assert_ne!(ReadFile(h, buf.as_mut_ptr(), 16, &mut n, null), 0);
+        close(h);
+        assert_eq!(&buf[..n as usize], b"second-a");
+
+        // Writes go to the drive's own folder; the mod is untouched.
+        let h = CreateFileW(
+            w(r"K:\a.rpf").as_ptr(),
+            GENERIC_WRITE,
+            0,
+            null,
+            CREATE_ALWAYS,
+            0,
+            null,
+        );
+        assert_ne!(h as isize, -1);
+        close(h);
+        assert_eq!(std::fs::read(package.path().join("a.rpf")).unwrap(), b"");
+        assert_eq!(std::fs::read(&second_a).unwrap(), b"second-a");
+        assert_eq!(
+            DeleteFileW(w(r"K:\new\c.dat").as_ptr()),
+            0,
+            "not on the drive"
+        );
+        assert!(new_c.is_file());
+
+        mods::clear();
+        assert_eq!(tr(r"K:\new\c.dat"), in_package(r"new\c.dat"));
+    }
+
+    #[test]
+    fn write_intent_is_read_from_each_call() {
+        let s = |m: &str| m.encode_utf16().collect::<Vec<_>>();
+        assert!(!create_writes(0x8000_0000, 3));
+        assert!(create_writes(0x4000_0000, 3));
+        assert!(create_writes(0x8000_0000, 2));
+        assert!(!mode_writes(&s("rb")));
+        assert!(mode_writes(&s("r+b")));
+        assert!(mode_writes(&s("a")));
+        assert!(!mode_writes(&s("r, ccs=UTF-8")));
+        assert!(!open_writes(0x8000));
+        assert!(open_writes(0x1 | 0x8000));
+        assert!(!openmode_writes(0x01 | 0x20));
+        assert!(openmode_writes(0x02));
     }
 }

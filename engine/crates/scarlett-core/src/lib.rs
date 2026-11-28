@@ -14,5 +14,5 @@ pub mod oom;
 pub mod policy;
 pub mod saves;
 
-pub use config::Config;
+pub use config::{Config, Mods};
 pub use policy::{PolicyError, ensure_outside_repo};
