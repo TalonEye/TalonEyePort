@@ -117,11 +117,12 @@ pub fn run(
             .with_context(|| format!("reading the mods folder {}", dir.display()))?;
         scarlett_hle::modules::mods::log(&summary, &dir);
         println!(
-            "mods           {} from {} ({} replaced, {} added, {} conflicts)",
+            "mods           {} from {} ({} replaced, {} added, {} inside archives, {} conflicts)",
             summary.mods.len(),
             dir.display(),
             summary.replaced,
             summary.added,
+            summary.archives.archives.iter().map(|(_, n)| n).sum::<usize>(),
             summary.conflicts.len()
         );
     }
@@ -197,6 +198,14 @@ pub fn run(
         let size = image.info().size_of_image as usize;
         // SAFETY: the image stays mapped, and nothing of it has run yet.
         unsafe { scarlett_loader::write_sites::apply_asked(&image_name, image.base(), size) };
+        // Mods inside archives, and the archive tables as the title reads them
+        // (SCARLETT_RPF_TABLES=1): both through the title's archive table parse.
+        let tables = scarlett_hle::modules::archives::asked();
+        if tables || scarlett_hle::modules::archives::any() {
+            let dir = if tables { Some(cfg.data_subdir("rpf-tables")?) } else { None };
+            // SAFETY: as above.
+            unsafe { scarlett_hle::modules::archives::install(image.base(), size, title_dir, dir) };
+        }
     }
     // The output size and render scale (SCARLETT_OUTPUT, SCARLETT_RENDER_SCALE,
     // SCARLETT_UPSCALER, or the SCARLETT_* names; each off without it).

@@ -9,6 +9,11 @@
 //! copied or written: the files are opened as the mod ships them, and only
 //! for reading ([`super::files`] asks for the overlay only then).
 //!
+//! A file under a folder named like an archive on the drive
+//! (`mods/<name>/common.rpf/data/version.txt`) replaces that entry inside the
+//! archive instead: [`super::archives`] points the entry at the mod's file
+//! when the title reads the archive's table.
+//!
 //! The index is built once and never changes during a run.
 
 use std::collections::HashMap;
@@ -51,6 +56,18 @@ pub struct Summary {
     /// Paths shipped by more than one mod: the path, and the mods that ship
     /// it in load order (the last one wins).
     pub conflicts: Vec<(String, Vec<String>)>,
+    /// Files that replace entries inside archives, by archive.
+    pub archives: super::archives::Planned,
+}
+
+/// Where `key` (a drive path) lies inside an archive: the archive's drive
+/// path and the path inside it (lower case, `/`), split at the first folder
+/// named like an archive.
+fn in_archive(key: &str) -> Option<(String, String)> {
+    let parts: Vec<&str> = key.split('\\').collect();
+    let at = parts[..parts.len().saturating_sub(1)].iter().position(|p| p.ends_with(".RPF"))?;
+    let inner = parts[at + 1..].join("/").to_lowercase();
+    Some((parts[..=at].join("\\"), inner))
 }
 
 /// Lays the mods in `dir` over drive `letter`, whose host folder is `root`
@@ -77,6 +94,8 @@ pub fn install(letter: char, root: &Path, dir: &Path) -> std::io::Result<Summary
     let mut shipped: HashMap<String, Vec<usize>> = HashMap::new();
     let mut summary = Summary::default();
     let mut names = Vec::with_capacity(folders.len());
+    // Archive, then path inside it, to the mod and its file; the last mod wins.
+    let mut archived: HashMap<String, HashMap<String, (usize, PathBuf)>> = HashMap::new();
     for (index, (name, path)) in folders.iter().enumerate() {
         let mut found = Vec::new();
         walk(path, &mut Vec::new(), &mut found)?;
@@ -85,6 +104,10 @@ pub fn install(letter: char, root: &Path, dir: &Path) -> std::io::Result<Summary
         for (key, host) in found {
             let host = std::path::absolute(&host).unwrap_or(host);
             shipped.entry(key.clone()).or_default().push(index);
+            if let Some((archive, inner)) = in_archive(&key) {
+                archived.entry(archive).or_default().insert(inner, (index, host));
+                continue;
+            }
             let entry = Entry {
                 host: host.as_os_str().encode_wide().collect(),
                 index,
@@ -108,6 +131,27 @@ pub fn install(letter: char, root: &Path, dir: &Path) -> std::io::Result<Summary
         .collect();
     conflicts.sort();
     summary.conflicts = conflicts;
+    let mut wanted: Vec<(String, Vec<(String, String, PathBuf)>)> = archived
+        .into_iter()
+        .map(|(archive, files)| {
+            let mut files: Vec<_> = files
+                .into_iter()
+                .map(|(inner, (index, host))| (inner, names[index].clone(), host))
+                .collect();
+            files.sort();
+            (archive, files)
+        })
+        .collect();
+    wanted.sort();
+    // Nothing to plan leaves the archives alone (no hook is installed for them).
+    if !wanted.is_empty() || super::archives::any() {
+        // A mod may ship the whole archive too; the title then opens that copy.
+        let file_for = |key: &str| match files.get(key) {
+            Some(entry) => PathBuf::from(String::from_utf16_lossy(&entry.host)),
+            None => root.join(key.replace('\\', std::path::MAIN_SEPARATOR_STR)),
+        };
+        summary.archives = super::archives::set(file_for, wanted);
+    }
 
     let letter = letter.to_ascii_uppercase() as u16;
     let active = !files.is_empty();
@@ -129,11 +173,18 @@ pub fn log(summary: &Summary, dir: &Path) {
             "more than one mod ships this file; the last one wins"
         );
     }
+    for (archive, files) in &summary.archives.archives {
+        tracing::info!(archive = %archive, files, "mod files replace entries inside an archive");
+    }
+    for archive in &summary.archives.missing {
+        tracing::warn!(archive = %archive, "mod files are in a folder named like an archive the package does not have; they are not used");
+    }
     tracing::info!(
         dir = %dir.display(),
         mods = summary.mods.len(),
         replaced = summary.replaced,
         added = summary.added,
+        in_archives = summary.archives.archives.iter().map(|(_, n)| n).sum::<usize>(),
         conflicts = summary.conflicts.len(),
         "mods laid over the package"
     );
@@ -217,6 +268,20 @@ mod tests {
         assert_eq!(key(&w("/x64//./b/../A.rpf")), r"X64\A.RPF");
         assert_eq!(key(&w(r"..\..\a.rpf")), "A.RPF");
         assert_eq!(key(&w("")), "");
+    }
+
+    #[test]
+    fn files_in_archive_folders_split_at_the_archive() {
+        assert_eq!(
+            in_archive(r"COMMON.RPF\DATA\VERSION.TXT"),
+            Some(("COMMON.RPF".into(), "data/version.txt".into()))
+        );
+        assert_eq!(
+            in_archive(r"X64\LEVELS.RPF\A\B.YMAP"),
+            Some((r"X64\LEVELS.RPF".into(), "a/b.ymap".into()))
+        );
+        assert_eq!(in_archive(r"X64\A.RPF"), None);
+        assert_eq!(in_archive("TOP.DAT"), None);
     }
 
     #[test]

@@ -151,7 +151,8 @@ extern "system" fn open_file(_: Factory, path: *const u16, iid: *const Guid, out
     let file = unsafe { std::fs::File::from_raw_handle(handle) };
     super::prefetch::start();
     let opened = if super::prefetch::on() { file.try_clone().ok() } else { None };
-    let files = Files::new(file, Io::chosen());
+    let mut files = Files::new(file, Io::chosen());
+    files.tail = super::archives::tail_of(handle);
     let file = Instance::create(Object::new("dstorage file", &FILE_VTABLE), File { files });
     if let Some(opened) = opened {
         super::prefetch::file_opened(file as usize, &opened);
@@ -324,6 +325,8 @@ struct Files {
     first: std::fs::File,
     others: Box<[OnceLock<Option<std::fs::File>>]>,
     io: Io,
+    /// For an archive mods change entries of: the range past its end their files are read from.
+    tail: Option<std::sync::Arc<super::archives::Tail>>,
 }
 
 impl Files {
@@ -334,7 +337,8 @@ impl Files {
             Io::Overlapped => 1,
             Io::Handles | Io::Direct => workers,
         };
-        Files { first, others: (0..others).map(|_| OnceLock::new()).collect(), io }
+        let others = (0..others).map(|_| OnceLock::new()).collect();
+        Files { first, others, io, tail: None }
     }
 
     #[cfg(test)]
@@ -342,8 +346,32 @@ impl Files {
         Files::new(std::fs::File::open(path).unwrap(), io)
     }
 
-    /// Reads at `offset`; as [`FileExt::seek_read`].
+    /// Reads at `offset`; as [`FileExt::seek_read`]. Past the real end of an archive mods change,
+    /// from the mods' files.
     fn read_at(&self, out: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        let Some(tail) = &self.tail else {
+            return self.read_file_at(out, offset);
+        };
+        let real = tail.real();
+        if offset + out.len() as u64 <= real {
+            return self.read_file_at(out, offset);
+        }
+        let mut done = 0;
+        if offset < real {
+            let first = (real - offset) as usize;
+            while done < first {
+                let got = self.read_file_at(&mut out[done..first], offset + done as u64)?;
+                if got == 0 {
+                    return Ok(done);
+                }
+                done += got;
+            }
+        }
+        Ok(done + tail.read(offset + done as u64, &mut out[done..])?)
+    }
+
+    /// Reads at `offset` in the file itself.
+    fn read_file_at(&self, out: &mut [u8], offset: u64) -> std::io::Result<usize> {
         use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_NO_BUFFERING, FILE_FLAG_OVERLAPPED};
         let flags = match self.io {
             Io::One | Io::Handles => 0,

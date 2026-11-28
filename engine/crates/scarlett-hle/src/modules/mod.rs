@@ -10,6 +10,8 @@
 
 #[cfg(windows)]
 pub mod apu;
+#[cfg(windows)]
+pub mod archives;
 pub mod audio;
 pub mod bink;
 pub mod d3d12x;

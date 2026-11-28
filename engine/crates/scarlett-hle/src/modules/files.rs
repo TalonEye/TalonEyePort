@@ -367,7 +367,7 @@ pub extern "system" fn CreateFileW(
     template: Handle,
 ) -> Handle {
     let p = wide_for(path, Access::writes_if(create_writes(access, disposition)));
-    host!("kernel32.dll", "CreateFileW": extern "system" fn(*const u16, u32, u32, *const c_void, u32, u32, Handle) -> Handle)(
+    let handle = host!("kernel32.dll", "CreateFileW": extern "system" fn(*const u16, u32, u32, *const c_void, u32, u32, Handle) -> Handle)(
         p.ptr(),
         access,
         share,
@@ -375,7 +375,9 @@ pub extern "system" fn CreateFileW(
         disposition,
         flags,
         template,
-    )
+    );
+    super::archives::opened(handle, p.ptr());
+    handle
 }
 
 pub extern "system" fn CreateFileA(
@@ -389,7 +391,7 @@ pub extern "system" fn CreateFileA(
 ) -> Handle {
     match narrow_for(path, Access::writes_if(create_writes(access, disposition))) {
         Some(p) => {
-            host!("kernel32.dll", "CreateFileW": extern "system" fn(*const u16, u32, u32, *const c_void, u32, u32, Handle) -> Handle)(
+            let handle = host!("kernel32.dll", "CreateFileW": extern "system" fn(*const u16, u32, u32, *const c_void, u32, u32, Handle) -> Handle)(
                 p.as_ptr(),
                 access,
                 share,
@@ -397,7 +399,9 @@ pub extern "system" fn CreateFileA(
                 disposition,
                 flags,
                 template,
-            )
+            );
+            super::archives::opened(handle, p.as_ptr());
+            handle
         }
         None => {
             host!("kernel32.dll", "CreateFileA": extern "system" fn(*const c_char, u32, u32, *const c_void, u32, u32, Handle) -> Handle)(
@@ -422,13 +426,15 @@ pub extern "system" fn CreateFile2(
     params: *const c_void,
 ) -> Handle {
     let p = wide_for(path, Access::writes_if(create_writes(access, disposition)));
-    host!("kernel32.dll", "CreateFile2": extern "system" fn(*const u16, u32, u32, u32, *const c_void) -> Handle)(
+    let handle = host!("kernel32.dll", "CreateFile2": extern "system" fn(*const u16, u32, u32, u32, *const c_void) -> Handle)(
         p.ptr(),
         access,
         share,
         disposition,
         params,
-    )
+    );
+    super::archives::opened(handle, p.ptr());
+    handle
 }
 
 pub extern "system" fn DeleteFileA(path: *const c_char) -> i32 {
@@ -489,11 +495,36 @@ pub extern "system" fn GetFileAttributesExW(
     info: *mut c_void,
 ) -> i32 {
     let p = wide(path);
-    host!("kernel32.dll", "GetFileAttributesExW": extern "system" fn(*const u16, i32, *mut c_void) -> i32)(
+    let ok = host!("kernel32.dll", "GetFileAttributesExW": extern "system" fn(*const u16, i32, *mut c_void) -> i32)(
         p.ptr(),
         level,
         info,
-    )
+    );
+    // GetFileExInfoStandard: an archive mods change entries of is as long as their range.
+    if ok != 0 && level == 0 && !info.is_null() && super::archives::any() {
+        // SAFETY: the host just filled `info`, and the path is NUL-terminated.
+        unsafe { super::archives::sized(&nul_text(p.ptr()), info.cast()) };
+    }
+    ok
+}
+
+/// A NUL-terminated UTF-16 string as text.
+fn nul_text(path: *const u16) -> String {
+    if path.is_null() {
+        return String::new();
+    }
+    // SAFETY: NUL-terminated, by the caller.
+    unsafe {
+        let len = (0..).take_while(|&i| *path.add(i) != 0).count();
+        String::from_utf16_lossy(std::slice::from_raw_parts(path, len))
+    }
+}
+
+/// The file a find result names: the search path's folder and the found name (at 44).
+fn found_path(search: *const u16, data: *const c_void) -> String {
+    let search = nul_text(search);
+    let folder = search.rfind(['\\', '/']).map_or("", |i| &search[..=i]);
+    format!("{folder}{}", nul_text(data.cast::<u8>().wrapping_add(44).cast()))
 }
 
 pub extern "system" fn GetFileAttributesW(path: *const u16) -> u32 {
@@ -544,10 +575,15 @@ pub extern "system" fn GetDiskFreeSpaceW(
 
 pub extern "system" fn FindFirstFileW(path: *const u16, data: *mut c_void) -> Handle {
     let p = wide(path);
-    host!("kernel32.dll", "FindFirstFileW": extern "system" fn(*const u16, *mut c_void) -> Handle)(
+    let find = host!("kernel32.dll", "FindFirstFileW": extern "system" fn(*const u16, *mut c_void) -> Handle)(
         p.ptr(),
         data,
-    )
+    );
+    if find as isize != -1 && !data.is_null() && super::archives::any() {
+        // SAFETY: the host just filled `data`, a WIN32_FIND_DATAW.
+        unsafe { super::archives::sized(&found_path(p.ptr(), data), data.cast()) };
+    }
+    find
 }
 
 pub extern "system" fn FindFirstFileExW(
@@ -559,14 +595,19 @@ pub extern "system" fn FindFirstFileExW(
     flags: u32,
 ) -> Handle {
     let p = wide(path);
-    host!("kernel32.dll", "FindFirstFileExW": extern "system" fn(*const u16, i32, *mut c_void, i32, *mut c_void, u32) -> Handle)(
+    let find = host!("kernel32.dll", "FindFirstFileExW": extern "system" fn(*const u16, i32, *mut c_void, i32, *mut c_void, u32) -> Handle)(
         p.ptr(),
         level,
         data,
         search,
         filter,
         flags,
-    )
+    );
+    if find as isize != -1 && !data.is_null() && super::archives::any() {
+        // SAFETY: the host just filled `data`, a WIN32_FIND_DATAW (both levels start alike).
+        unsafe { super::archives::sized(&found_path(p.ptr(), data), data.cast()) };
+    }
+    find
 }
 
 pub extern "system" fn MoveFileExW(from: *const u16, to: *const u16, flags: u32) -> i32 {
@@ -632,6 +673,22 @@ pub extern "system" fn ReadFile(
     read: *mut u32,
     overlapped: *mut c_void,
 ) -> i32 {
+    // Reads past the end of an archive mods change entries of are of the mods' files.
+    // SAFETY: the title's arguments, as it passed them.
+    let served = unsafe {
+        super::archives::serve_read(file, buffer, len, read, overlapped.cast(), read_file)
+    };
+    served.unwrap_or_else(|| read_file(file, buffer, len, read, overlapped))
+}
+
+/// The title's read, from the host.
+fn read_file(
+    file: *mut c_void,
+    buffer: *mut u8,
+    len: u32,
+    read: *mut u32,
+    overlapped: *mut c_void,
+) -> i32 {
     super::prefetch::title_read(file, overlapped.cast(), len);
     let writing = scarlett_gpu::kernel_writing(buffer as usize, len as usize);
     let done = host!("kernel32.dll", "ReadFile": extern "system" fn(*mut c_void, *mut u8, u32, *mut u32, *mut c_void) -> i32)(
@@ -658,6 +715,20 @@ pub extern "system" fn ReadFile(
     // SAFETY: as above.
     unsafe { windows_sys::Win32::Foundation::SetLastError(error) };
     done
+}
+
+/// The size of an archive mods change entries of includes the range their files are read from.
+pub extern "system" fn GetFileSizeEx(file: *mut c_void, size: *mut i64) -> i32 {
+    if let Some(len) = super::archives::virtual_size(file)
+        && !size.is_null()
+    {
+        // SAFETY: the title's out pointer.
+        unsafe { *size = len as i64 };
+        return 1;
+    }
+    host!("kernel32.dll", "GetFileSizeEx": extern "system" fn(*mut c_void, *mut i64) -> i32)(
+        file, size,
+    )
 }
 
 /// The host CRT reads large requests straight into the caller's buffer
@@ -824,6 +895,7 @@ pub(crate) fn module() -> HleModule {
         ],
         exports: vec![
             hle_export!(ReadFile),
+            hle_export!(GetFileSizeEx),
             hle_export!(fread),
             hle_export!(CreateFileW),
             hle_export!(CreateFileA),
@@ -869,6 +941,17 @@ pub(crate) fn module() -> HleModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_find_result_names_the_file_in_the_search_folder() {
+        let search: Vec<u16> = r"C:\dump\*.rpf".encode_utf16().chain([0]).collect();
+        let mut data = vec![0u16; 300];
+        for (i, c) in "common.rpf".encode_utf16().enumerate() {
+            data[22 + i] = c;
+        }
+        let found = found_path(search.as_ptr(), data.as_ptr().cast());
+        assert_eq!(found, r"C:\dump\common.rpf");
+    }
 
     fn w(s: &str) -> Vec<u16> {
         s.encode_utf16().chain([0]).collect()
