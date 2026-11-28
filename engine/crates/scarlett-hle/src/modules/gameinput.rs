@@ -128,7 +128,7 @@ pub(crate) fn cursor_locked() -> bool {
 }
 
 /// Set while the plain mouse look (`SCARLETT_MOUSE_LOOK`) pins the pointer to
-/// the window's middle each poll; the pointer is hidden then too.
+/// the game area's middle each poll (`LookCapture`); the pointer is hidden then too.
 #[cfg(windows)]
 static LOOK_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -251,6 +251,32 @@ impl MouseButtons {
     }
 }
 
+/// When the plain mouse look (`SCARLETT_MOUSE_LOOK`) holds the pointer: from a
+/// left click inside the game's client area (not the title bar or the frame)
+/// until the window loses focus, Windows moves or resizes it or opens a menu,
+/// or the pointer leaves the client area.
+#[cfg(any(windows, test))]
+#[derive(Default)]
+struct LookCapture {
+    captured: bool,
+    lmb_was_down: bool,
+}
+
+#[cfg(any(windows, test))]
+impl LookCapture {
+    /// Whether the pointer is held after this poll.
+    fn update(&mut self, focused: bool, busy: bool, in_client: bool, lmb_down: bool) -> bool {
+        let pressed = lmb_down && !self.lmb_was_down;
+        self.lmb_was_down = lmb_down;
+        if !focused || busy || !in_client {
+            self.captured = false;
+        } else if pressed {
+            self.captured = true;
+        }
+        self.captured
+    }
+}
+
 /// A gamepad reading: triggers 0 to 1, sticks -1 to 1 (up positive).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -314,6 +340,20 @@ fn look_stick(dx: i32, dy: i32, sensitivity: f32, last: (f32, f32)) -> (f32, f32
     let to = |d: i32| (d as f32 * sensitivity / 24.0).clamp(-1.0, 1.0);
     let (x, y) = (to(dx), -to(dy));
     ((x + last.0) / 2.0, (y + last.1) / 2.0)
+}
+
+/// `GUITHREADINFO` flags: Windows' own modal loop (moving or resizing the
+/// window, a menu) has the pointer.
+const GUI_INMOVESIZE: u32 = 0x2;
+const GUI_INMENUMODE: u32 = 0x4;
+const GUI_SYSTEMMENUMODE: u32 = 0x8;
+const GUI_POPUPMENUMODE: u32 = 0x10;
+
+/// Mouse look leaves the pointer alone while the window's thread has these
+/// flags: warping it to the window's middle during a title bar drag made the
+/// window jump so the grabbed point landed where the middle had been.
+fn windows_has_pointer(gui_flags: u32) -> bool {
+    gui_flags & (GUI_INMOVESIZE | GUI_INMENUMODE | GUI_SYSTEMMENUMODE | GUI_POPUPMENUMODE) != 0
 }
 
 fn fallback(keys: &[KeyState]) -> PadState {
@@ -1460,10 +1500,10 @@ mod host {
         XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y, XINPUT_STATE, XINPUT_VIBRATION, XInputGetState,
         XInputSetState,
     };
-    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+    use windows_sys::Win32::Foundation::{HWND, POINT};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetCursorPos, GetForegroundWindow, GetWindowInfo, GetWindowRect, GetWindowThreadProcessId,
-        HTCLIENT, PostMessageW, SetCursorPos, WINDOWINFO, WM_MOUSEMOVE, WM_SETCURSOR,
+        GUITHREADINFO, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowInfo,
+        GetWindowThreadProcessId, HTCLIENT, PostMessageW, SetCursorPos, WINDOWINFO, WM_MOUSEMOVE, WM_SETCURSOR,
     };
 
     use super::*;
@@ -1510,6 +1550,7 @@ mod host {
         empty_until: [Option<Instant>; PADS],
         /// The last mouse look stick, for easing.
         look: (f32, f32),
+        look_capture: LookCapture,
         mouse_locked: bool,
         just_locked: bool,
         toggle_was_down: bool,
@@ -1608,23 +1649,26 @@ mod host {
 
         fn look(&mut self) -> Option<PadState> {
             let sensitivity = mouse_look_sensitivity();
-            if sensitivity <= 0.0 || !focused() {
+            let hwnd = foreground_window();
+            let mut at = POINT { x: 0, y: 0 };
+            // SAFETY: plain query into a local.
+            let client = hwnd.and_then(client_rect_screen).filter(|_| unsafe { GetCursorPos(&mut at) } != 0);
+            let in_client = client.is_some_and(|(l, t, r, b)| (l..r).contains(&at.x) && (t..b).contains(&at.y));
+            // SAFETY: plain async key state query.
+            let lmb_down = unsafe { GetAsyncKeyState(0x01) } < 0;
+            let held = self.look_capture.update(hwnd.is_some(), hwnd.is_some_and(window_busy), in_client, lmb_down);
+            let Some((left, top, right, bottom)) = client.filter(|_| held && sensitivity > 0.0) else {
+                // Not clicked into the game yet, or the title bar / frame / a
+                // drag / a menu / another window has the pointer: no warp.
                 self.look = (0.0, 0.0);
                 LOOK_ACTIVE.store(false, Ordering::Relaxed);
                 return None;
-            }
+            };
             // The warp below moves the pointer, so the window gets a
             // WM_SETCURSOR and `lifecycle` hides it.
             LOOK_ACTIVE.store(true, Ordering::Relaxed);
-            let mut at = POINT { x: 0, y: 0 };
-            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
-            // SAFETY: plain queries into locals; the window is ours (focused).
-            let ok = unsafe { GetCursorPos(&mut at) != 0 && GetWindowRect(GetForegroundWindow(), &mut rect) != 0 };
-            if !ok {
-                return None;
-            }
-            let (cx, cy) = ((rect.left + rect.right) / 2, (rect.top + rect.bottom) / 2);
-            // The pointer goes back to the window's middle each poll, so it never reaches an edge.
+            let (cx, cy) = ((left + right) / 2, (top + bottom) / 2);
+            // The pointer goes back to the game area's middle each poll, so it never reaches an edge.
             // SAFETY: plain call.
             unsafe { SetCursorPos(cx, cy) };
             self.look = look_stick(at.x - cx, at.y - cy, sensitivity, self.look);
@@ -1693,7 +1737,17 @@ mod host {
                 .replace(now)
                 .map_or(POLL, |prev| now.saturating_duration_since(prev));
 
-            let (right_x, right_y) = if self.mouse_locked {
+            let in_client =
+                (c_left..c_right).contains(&pos.x) && (c_top..c_bottom).contains(&pos.y);
+            let (right_x, right_y) = if self.mouse_locked && (!in_client || window_busy(hwnd)) {
+                // The pointer is on the title bar or the frame, Windows is
+                // moving or resizing the window, or a menu is open: no warp
+                // (a click on the title bar snapped the window before the
+                // drag began); take a fresh anchor once it is back.
+                self.just_locked = true;
+                self.mouse_look.reset();
+                (0.0, 0.0)
+            } else if self.mouse_locked {
                 let cx = c_left + (c_right - c_left) / 2;
                 let cy = c_top + (c_bottom - c_top) / 2;
                 let (dx, dy) = if self.just_locked {
@@ -1734,11 +1788,9 @@ mod host {
                 (0.0, 0.0)
             };
 
-            let in_client =
-                (c_left..c_right).contains(&pos.x) && (c_top..c_bottom).contains(&pos.y);
             let [lmb, rmb, mmb] = self.mouse_buttons.update(
                 [key_down(0x01), key_down(0x02), key_down(0x04)],
-                self.mouse_locked || in_client,
+                in_client,
             );
             let mut pad = PadState {
                 right_x,
@@ -1832,6 +1884,19 @@ mod host {
     /// The foreground window is one of ours (the title's or our fallback).
     fn focused() -> bool {
         foreground_window().is_some()
+    }
+
+    /// Windows is moving or resizing `hwnd`, or one of its menus is open.
+    fn window_busy(hwnd: HWND) -> bool {
+        let mut info = GUITHREADINFO {
+            cbSize: size_of::<GUITHREADINFO>() as u32,
+            ..Default::default()
+        };
+        // SAFETY: plain queries; `info` is initialized with cbSize set.
+        unsafe {
+            let thread = GetWindowThreadProcessId(hwnd, std::ptr::null_mut());
+            thread != 0 && GetGUIThreadInfo(thread, &mut info) != 0 && windows_has_pointer(info.flags)
+        }
     }
 
     /// Recenters the cursor at `(cx, cy)` and reads back its actual screen
@@ -2132,6 +2197,43 @@ mod tests {
         let rest = current(hub, GAMEPAD_KIND, FALLBACK).unwrap();
         assert_eq!(pad(rest), PadState::default());
         release(rest);
+    }
+
+    #[test]
+    fn mouse_look_leaves_the_pointer_to_window_drags_and_menus() {
+        assert!(!windows_has_pointer(0));
+        // GUI_CARETBLINKING (0x1) and GUI_16BITTASK (0x20) are not Windows holding the pointer
+        assert!(!windows_has_pointer(0x1 | 0x20));
+        for flag in [GUI_INMOVESIZE, GUI_INMENUMODE, GUI_SYSTEMMENUMODE, GUI_POPUPMENUMODE] {
+            assert!(windows_has_pointer(flag), "{flag:#x}");
+            assert!(windows_has_pointer(flag | 0x1), "{flag:#x} with the caret");
+        }
+    }
+
+    #[test]
+    fn mouse_look_holds_the_pointer_only_after_a_click_in_the_game() {
+        let mut c = LookCapture::default();
+        // focused, pointer in the game, no click: free
+        assert!(!c.update(true, false, true, false));
+        // a press on the title bar (outside the client area): free, also while
+        // it is dragged into the game with the button still down
+        assert!(!c.update(true, false, false, true));
+        assert!(!c.update(true, false, true, true));
+        assert!(!c.update(true, false, true, false));
+        // a click in the game: held, and it stays held after the release
+        assert!(c.update(true, false, true, true));
+        assert!(c.update(true, false, true, false));
+        // the pointer reaching the title bar or the frame frees it
+        assert!(!c.update(true, false, false, false));
+        assert!(!c.update(true, false, true, false));
+        // a drag / a menu frees it, and so does losing the focus
+        assert!(c.update(true, false, true, true));
+        assert!(!c.update(true, true, true, true));
+        assert!(!c.update(true, false, true, false));
+        assert!(c.update(true, false, true, true));
+        assert!(!c.update(false, false, true, false));
+        // the click that brings the window back captures again
+        assert!(c.update(true, false, true, true));
     }
 
     #[test]

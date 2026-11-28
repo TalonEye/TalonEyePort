@@ -241,7 +241,7 @@ impl Launcher {
             if let Some(k) = segs(ui, r.max.x - 76., r.center().y, "ft-rs", &["50%", "100%", "150%", "200%"], sel, &[t.rumble; 4], 56.) {
                 t.rumble_strength = strengths[k];
             }
-            let r = me.feature_row(ui, w, "Mouse look", "The mouse turns the camera while the game window has focus, and its speed (SCARLETT_MOUSE_LOOK). Alt+Tab frees the pointer.", true, ch(&|x| format!("{}{}", x.mouse_look, x.mouse_sensitivity)), 330.);
+            let r = me.feature_row(ui, w, "Mouse look", "The mouse turns the camera once you click into the game, and its speed (SCARLETT_MOUSE_LOOK). Alt+Tab frees the pointer; the title bar never takes it.", true, ch(&|x| format!("{}{}", x.mouse_look, x.mouse_sensitivity)), 330.);
             sw(ui, r, "ft-mouse", &mut t.mouse_look);
             let speeds = [0.5_f32, 1.0, 1.5, 2.0];
             let sel = speeds.iter().position(|s| (s - t.mouse_sensitivity).abs() < 0.01);
